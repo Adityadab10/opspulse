@@ -1,1 +1,32 @@
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
+
+:root {
+  --bg-1: #f8fafc;
+  --bg-2: #e2e8f0;
+  --ink-1: #0f172a;
+  --ink-2: #334155;
+  --brand: #0f766e;
+  --brand-soft: #ccfbf1;
+  --card: #ffffff;
+  --border: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Sora", sans-serif;
+  color: var(--ink-1);
+  background:
+    radial-gradient(circle at 20% 20%, #cffafe 0%, transparent 30%),
+    radial-gradient(circle at 80% 0%, #dbeafe 0%, transparent 35%),
+    linear-gradient(140deg, var(--bg-1), var(--bg-2));
+  min-height: 100vh;
+}
+
+.page-shell {
+  min-height: 100vh;
+}
