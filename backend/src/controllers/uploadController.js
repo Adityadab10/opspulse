@@ -7,7 +7,9 @@ import { normalizeCsvRow, parseCsvBuffer } from "../helpers/csvHelpers.js";
 export const uploadSalesCsv = async (req, res) => {
   try {
     if (!req.file?.buffer) {
-      return res.status(400).json({ message: "CSV file is required (field: file)" });
+      return res.status(400).json({
+        message: "CSV file is required (field name: file)",
+      });
     }
 
     const rawRows = await parseCsvBuffer(req.file.buffer);
@@ -15,25 +17,23 @@ export const uploadSalesCsv = async (req, res) => {
       return res.status(400).json({ message: "CSV is empty" });
     }
 
-    const normalizedRows = [];
-    for (const row of rawRows) {
-      const parsed = normalizeCsvRow(row);
-      if (parsed) normalizedRows.push(parsed);
-    }
-
-    if (!normalizedRows.length) {
+    const validRows = rawRows.map(normalizeCsvRow).filter(Boolean);
+    if (!validRows.length) {
       return res.status(400).json({ message: "No valid rows found in CSV" });
     }
 
-    const uniquePairs = new Map();
-    for (const row of normalizedRows) {
+    const uniqueProducts = new Map();
+    for (const row of validRows) {
       const key = `${row.productName.toLowerCase()}__${row.category.toLowerCase()}`;
-      if (!uniquePairs.has(key)) {
-        uniquePairs.set(key, { name: row.productName, category: row.category });
+      if (!uniqueProducts.has(key)) {
+        uniqueProducts.set(key, {
+          name: row.productName,
+          category: row.category,
+        });
       }
     }
 
-    const productUpsertOps = Array.from(uniquePairs.values()).map((p) => ({
+    const productOps = Array.from(uniqueProducts.values()).map((p) => ({
       updateOne: {
         filter: { name: p.name, category: p.category },
         update: { $setOnInsert: { name: p.name, category: p.category } },
@@ -41,22 +41,26 @@ export const uploadSalesCsv = async (req, res) => {
       },
     }));
 
-    const productWriteResult =
-      productUpsertOps.length > 0
-        ? await Product.bulkWrite(productUpsertOps, { ordered: false })
-        : null;
+    const productWriteResult = productOps.length
+      ? await Product.bulkWrite(productOps, { ordered: false })
+      : null;
 
-    const allProductDocs = await Product.find({
-      $or: Array.from(uniquePairs.values()).map((p) => ({ name: p.name, category: p.category })),
+    const productDocs = await Product.find({
+      $or: Array.from(uniqueProducts.values()).map((p) => ({
+        name: p.name,
+        category: p.category,
+      })),
     }).lean();
 
     const productIdByKey = new Map();
-    for (const doc of allProductDocs) {
-      const key = `${doc.name.toLowerCase()}__${doc.category.toLowerCase()}`;
-      productIdByKey.set(key, doc._id);
+    for (const p of productDocs) {
+      productIdByKey.set(
+        `${p.name.toLowerCase()}__${p.category.toLowerCase()}`,
+        p._id
+      );
     }
 
-    const salesUpsertOps = normalizedRows.map((row) => {
+    const salesOps = validRows.map((row) => {
       const key = `${row.productName.toLowerCase()}__${row.category.toLowerCase()}`;
       const productId = productIdByKey.get(key);
 
@@ -65,7 +69,6 @@ export const uploadSalesCsv = async (req, res) => {
           filter: {
             productId,
             date: row.date,
-            quantity: row.quantity,
           },
           update: {
             $setOnInsert: {
@@ -79,19 +82,17 @@ export const uploadSalesCsv = async (req, res) => {
       };
     });
 
-    const salesWriteResult =
-      salesUpsertOps.length > 0
-        ? await Sales.bulkWrite(salesUpsertOps, { ordered: false })
-        : null;
+    const salesWriteResult = salesOps.length
+      ? await Sales.bulkWrite(salesOps, { ordered: false })
+      : null;
 
     return res.status(201).json({
-      recordsParsed: normalizedRows.length,
-      totalRecordsInserted: salesWriteResult?.upsertedCount || 0,
       productsCreated: productWriteResult?.upsertedCount || 0,
+      salesRecordsInserted: salesWriteResult?.upsertedCount || 0,
     });
   } catch (error) {
     return res.status(500).json({
-      message: "Failed to upload and process CSV",
+      message: "Failed to process CSV upload",
       error: error.message,
     });
   }

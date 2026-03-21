@@ -1,8 +1,14 @@
 import express from "express";
-import { getAlerts, createAlert } from "../controllers/alertController.js";
+import {
+  getAlerts,
+  createAlert,
+  deactivateAlert,
+} from "../controllers/alertController.js";
 
 const router = express.Router();
 
-router.route("/").get(getAlerts).post(createAlert);
+router.get("/", getAlerts);
+router.post("/", createAlert);
+router.patch("/:alertId/deactivate", deactivateAlert);
 
 export default router;

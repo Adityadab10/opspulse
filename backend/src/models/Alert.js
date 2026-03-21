@@ -9,10 +9,24 @@ const alertSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["HIGH_DEMAND", "LOW_DEMAND"],
+      enum: ["HIGH_DEMAND", "LOW_DEMAND", "TREND_UP", "TREND_DOWN"],
+      required: true,
     },
     message: {
       type: String,
+      required: true,
+    },
+    severity: {
+      type: String,
+      enum: ["LOW", "MEDIUM", "HIGH"],
+      default: "MEDIUM",
+    },
+    percentChange: {
+      type: Number,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
     },
   },
   { timestamps: true }

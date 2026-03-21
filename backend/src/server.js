@@ -11,6 +11,7 @@ import uploadRoutes from "./routes/uploadRoutes.js";
 import predictionRoutes from "./routes/predictionRoutes.js";
 
 
+
 dotenv.config();
 
 const app = express();
@@ -25,6 +26,7 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 app.use("/api/products", productRoutes);
+app.use("/api/products/analysis",productRoutes);
 app.use("/api/sales", salesRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/alerts", alertRoutes);

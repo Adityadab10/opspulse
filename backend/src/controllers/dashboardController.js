@@ -1,43 +1,40 @@
 import Product from "../models/Product.js";
 import Sales from "../models/Sales.js";
 import Alert from "../models/Alert.js";
-import {
-  calculatePercentChange,
-  getSixMonthStartDate,
-  roundTo,
-} from "../helpers/analytics.js";
+import { roundTo } from "../helpers/analytics.js";
+
+const getLastSixMonthWindow = () => {
+  const now = new Date();
+  const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
+
+  const monthKeys = [];
+  for (let i = 0; i < 6; i += 1) {
+    const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    monthKeys.push(key);
+  }
+
+  return { startDate, monthKeys };
+};
 
 export const getSummary = async (req, res) => {
   try {
-    const [totalProducts, activeAlerts, monthlyAvgAgg] = await Promise.all([
+    const [totalProducts, activeAlerts, avgAgg] = await Promise.all([
       Product.countDocuments(),
       Alert.countDocuments(),
       Sales.aggregate([
         {
           $group: {
-            _id: {
-              year: { $year: "$date" },
-              month: { $month: "$date" },
-            },
-            monthlyTotal: { $sum: "$quantity" },
-          },
-        },
-        {
-          $group: {
             _id: null,
-            avgMonthlySales: { $avg: "$monthlyTotal" },
+            avgMonthlySales: { $avg: "$quantity" },
           },
         },
       ]),
     ]);
 
-    const avgMonthlySales = monthlyAvgAgg.length
-      ? roundTo(monthlyAvgAgg[0].avgMonthlySales)
-      : 0;
-
     return res.status(200).json({
       totalProducts,
-      avgMonthlySales,
+      avgMonthlySales: avgAgg.length ? roundTo(avgAgg[0].avgMonthlySales) : 0,
       activeAlerts,
       recommendationsReady: 0,
     });
@@ -51,58 +48,124 @@ export const getSummary = async (req, res) => {
 
 export const getTrends = async (req, res) => {
   try {
-    const startDate = getSixMonthStartDate();
+    const now = new Date();
+    const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
-    const trends = await Sales.aggregate([
-      { $match: { date: { $gte: startDate } } },
-      {
-        $group: {
-          _id: {
-            productId: "$productId",
-            year: { $year: "$date" },
-            month: { $month: "$date" },
+    const sixMonthKeys = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    });
+
+    const buildPipeline = (withDateFilter) => {
+      const pipeline = [];
+
+      if (withDateFilter) {
+        pipeline.push({
+          $match: { date: { $gte: startDate } },
+        });
+      }
+
+      pipeline.push(
+        {
+          $group: {
+            _id: {
+              productId: "$productId",
+              year: { $year: "$date" },
+              month: { $month: "$date" },
+            },
+            monthlyQty: { $sum: "$quantity" },
           },
-          totalSales: { $sum: "$quantity" },
         },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
-      {
-        $group: {
-          _id: "$_id.productId",
-          totalSales: { $sum: "$totalSales" },
-          monthlySales: {
-            $push: {
-              year: "$_id.year",
-              month: "$_id.month",
-              quantity: "$totalSales",
+        {
+          $addFields: {
+            sortDate: {
+              $dateFromParts: {
+                year: "$_id.year",
+                month: "$_id.month",
+                day: 1,
+              },
+            },
+            monthKey: {
+              $concat: [
+                { $toString: "$_id.year" },
+                "-",
+                {
+                  $cond: [
+                    { $lt: ["$_id.month", 10] },
+                    { $concat: ["0", { $toString: "$_id.month" }] },
+                    { $toString: "$_id.month" },
+                  ],
+                },
+              ],
             },
           },
         },
-      },
-      { $sort: { totalSales: -1 } },
-      { $limit: 3 },
-      {
-        $lookup: {
-          from: "products",
-          localField: "_id",
-          foreignField: "_id",
-          as: "product",
+        { $sort: { sortDate: 1 } },
+        {
+          $group: {
+            _id: "$_id.productId",
+            totalSales: { $sum: "$monthlyQty" },
+            points: {
+              $push: {
+                month: "$monthKey",
+                quantity: "$monthlyQty",
+                sortDate: "$sortDate",
+              },
+            },
+          },
         },
-      },
-      { $unwind: "$product" },
-      {
-        $project: {
-          _id: 0,
-          productId: "$_id",
-          productName: "$product.name",
-          category: "$product.category",
-          totalSales: 1,
-          monthlySales: 1,
+        { $sort: { totalSales: -1 } },
+        { $limit: 3 },
+        {
+          $lookup: {
+            from: "products",
+            localField: "_id",
+            foreignField: "_id",
+            as: "product",
+          },
         },
-      },
-    ]);
+        { $unwind: "$product" },
+        {
+          $project: {
+            _id: 0,
+            product: "$product.name",
+            totalSales: 1,
+            points: 1,
+          },
+        }
+      );
 
-    return res.status(200).json(trends);
+      return pipeline;
+    };
+
+    // First try strict last-6-months data.
+    let rows = await Sales.aggregate(buildPipeline(true));
+
+    // If no rows found, fallback to all-time data (still top 3, sorted by date).
+    let usedFallback = false;
+    if (!rows.length) {
+      rows = await Sales.aggregate(buildPipeline(false));
+      usedFallback = true;
+    }
+
+    const response = rows.map((row) => {
+      if (!usedFallback) {
+        const pointMap = new Map(row.points.map((p) => [p.month, p.quantity]));
+        return {
+          product: row.product,
+          data: sixMonthKeys.map((k) => pointMap.get(k) || 0),
+        };
+      }
+
+      // Fallback mode: no date filter, return latest 6 month points per product.
+      const lastSix = row.points.slice(-6).map((p) => p.quantity);
+      return {
+        product: row.product,
+        data: lastSix,
+      };
+    });
+
+    return res.status(200).json(response);
   } catch (error) {
     return res.status(500).json({
       message: "Failed to fetch trends",
