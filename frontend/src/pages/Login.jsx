@@ -43,51 +43,50 @@ export default function Login() {
   };
 
   return (
-    <div className="page-shell flex items-center justify-center px-4 py-10 min-h-screen relative">
+    <div className="page-shell flex min-h-screen items-center justify-center px-4 py-10">
       {/* Back Button */}
       <button
         onClick={() => navigate("/")}
-        className="absolute top-6 left-6 p-2 rounded-lg transition hover:bg-opacity-80"
-        style={{
-          background: 'rgba(197, 148, 75, 0.1)',
-          color: 'var(--accent-primary)',
-        }}
+        className="absolute left-6 top-6 rounded-xl bg-purple-500/10 p-2 text-purple-400 transition hover:bg-purple-500/20 hover:text-purple-300"
         title="Back to Landing"
       >
         <ChevronLeft size={24} />
       </button>
 
-      <div className="w-full max-w-md rounded-2xl p-8" style={{
-        background: 'linear-gradient(135deg, var(--bg-2) 0%, rgba(61, 54, 49, 0.5) 100%)',
-        border: '1px solid var(--border-color)',
-      }}>
-        <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'DM Serif Display' }}>
+      <div className="glass w-full max-w-md rounded-3xl p-8 shadow-2xl">
+        <div className="mb-6 flex justify-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 shadow-lg shadow-purple-900/50">
+            <span className="text-3xl font-bold text-white">I</span>
+          </div>
+        </div>
+
+        <h1 className="bg-gradient-to-r from-white to-purple-200 bg-clip-text text-center text-3xl font-bold text-transparent">
           {mode === "login" ? "Welcome Back" : "Create Account"}
         </h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
+        <p className="mt-2 text-center text-sm text-slate-400">
           {mode === "login" 
             ? "Access your inventory dashboard"
             : "Register to get started"}
         </p>
 
-        <div className="mt-6 grid grid-cols-2 rounded-lg p-1" style={{ background: 'rgba(75, 70, 65, 0.3)' }}>
+        <div className="mt-6 grid grid-cols-2 gap-2 rounded-xl bg-purple-500/5 p-1">
           <button
             onClick={() => {setMode("login"); setPassword("");}}
-            className={`rounded-md py-2 font-medium transition ${mode === "login" ? "font-bold" : ""}`}
-            style={{
-              background: mode === "login" ? 'var(--accent-primary)' : 'transparent',
-              color: mode === "login" ? 'var(--bg-1)' : 'var(--text-secondary)',
-            }}
+            className={`rounded-lg py-2.5 font-medium transition ${
+              mode === "login" 
+                ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-900/40" 
+                : "text-slate-400 hover:text-white"
+            }`}
           >
             Login
           </button>
           <button
             onClick={() => {setMode("signup"); setPassword("");}}
-            className={`rounded-md py-2 font-medium transition ${mode === "signup" ? "font-bold" : ""}`}
-            style={{
-              background: mode === "signup" ? 'var(--accent-primary)' : 'transparent',
-              color: mode === "signup" ? 'var(--bg-1)' : 'var(--text-secondary)',
-            }}
+            className={`rounded-lg py-2.5 font-medium transition ${
+              mode === "signup" 
+                ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-900/40" 
+                : "text-slate-400 hover:text-white"
+            }`}
           >
             Signup
           </button>
@@ -96,12 +95,7 @@ export default function Login() {
         <button
           onClick={handleGoogle}
           disabled={submitting}
-          className="mt-6 w-full rounded-lg border px-4 py-3 font-medium text-center transition hover:opacity-80"
-          style={{
-            borderColor: 'var(--border-light)',
-            color: 'var(--text-primary)',
-            opacity: submitting ? 0.6 : 1,
-          }}
+          className="mt-6 w-full rounded-xl border border-purple-500/20 bg-purple-500/5 px-4 py-3 font-medium text-white transition hover:border-purple-500/40 hover:bg-purple-500/10 disabled:opacity-60"
         >
           {submitting ? <span>⏳ Signing in...</span> : <span>🔐 Continue with Google</span>}
         </button>
@@ -109,44 +103,34 @@ export default function Login() {
         <form onSubmit={handleEmailSubmit} className="mt-6 space-y-4">
           {mode === "signup" && (
             <div>
-              <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+              <label className="mb-2 block text-sm font-medium text-slate-300">
                 Full Name
               </label>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="John Doe"
-                className="w-full rounded-lg p-3"
-                style={{
-                  background: 'rgba(75, 70, 65, 0.3)',
-                  border: '1px solid var(--border-light)',
-                  color: 'var(--text-primary)',
-                }}
+                className="w-full rounded-xl border border-purple-500/20 bg-purple-500/5 p-3 text-white placeholder-slate-500 outline-none transition focus:border-purple-500/40 focus:bg-purple-500/10"
               />
             </div>
           )}
           
           <div>
-            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+            <label className="mb-2 block text-sm font-medium text-slate-300">
               Email Address
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="You@example.com"
+              placeholder="you@example.com"
               required
-              className="w-full rounded-lg p-3"
-              style={{
-                background: 'rgba(75, 70, 65, 0.3)',
-                border: '1px solid var(--border-light)',
-                color: 'var(--text-primary)',
-              }}
+              className="w-full rounded-xl border border-purple-500/20 bg-purple-500/5 p-3 text-white placeholder-slate-500 outline-none transition focus:border-purple-500/40 focus:bg-purple-500/10"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
+            <label className="mb-2 block text-sm font-medium text-slate-300">
               Password
             </label>
             <input
@@ -155,24 +139,14 @@ export default function Login() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               required
-              className="w-full rounded-lg p-3"
-              style={{
-                background: 'rgba(75, 70, 65, 0.3)',
-                border: '1px solid var(--border-light)',
-                color: 'var(--text-primary)',
-              }}
+              className="w-full rounded-xl border border-purple-500/20 bg-purple-500/5 p-3 text-white placeholder-slate-500 outline-none transition focus:border-purple-500/40 focus:bg-purple-500/10"
             />
           </div>
 
           <button
             type="submit"
             disabled={!email || !password || submitting}
-            className="w-full rounded-lg px-4 py-3 font-semibold text-lg transition hover:shadow-lg"
-            style={{
-              background: !email || !password || submitting ? 'var(--text-muted)' : 'var(--accent-primary)',
-              color: 'var(--bg-1)',
-              opacity: !email || !password || submitting ? 0.6 : 1,
-            }}
+            className="w-full rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-3 font-semibold text-white shadow-lg shadow-purple-900/40 transition-all hover:scale-105 hover:shadow-xl hover:shadow-purple-900/50 disabled:opacity-60 disabled:hover:scale-100"
           >
             {submitting ? "⏳ Signing in..." : "📧 " + (mode === "login" ? "Login" : "Create Account")}
           </button>

@@ -1,6 +1,18 @@
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, Legend } from "recharts";
 
-const COLORS = ["#16a34a", "#f59e0b", "#dc2626"];
+const COLORS = ["#10b981", "#f59e0b", "#ef4444"];
+
+const CustomTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="glass rounded-xl p-3 shadow-lg">
+        <p className="font-semibold text-white">{payload[0].name}</p>
+        <p className="text-sm text-slate-300">{payload[0].value}%</p>
+      </div>
+    );
+  }
+  return null;
+};
 
 export default function DonutChart() {
   const data = [
@@ -10,25 +22,47 @@ export default function DonutChart() {
   ];
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h3 className="mb-4 text-lg font-semibold text-slate-900">Decision Distribution</h3>
-      <div className="h-72 w-full">
+    <div className="glass rounded-2xl p-6 transition-all hover:border-purple-500/40">
+      <h3 className="mb-6 bg-gradient-to-r from-white to-purple-200 bg-clip-text text-xl font-bold text-transparent">
+        Decision Distribution
+      </h3>
+      <div className="flex h-80 w-full items-center justify-center">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Pie data={data} dataKey="value" nameKey="name" innerRadius={60} outerRadius={90}>
+            <Pie 
+              data={data} 
+              dataKey="value" 
+              nameKey="name" 
+              cx="50%" 
+              cy="50%"
+              innerRadius={70} 
+              outerRadius={100}
+              paddingAngle={2}
+            >
               {data.map((entry, index) => (
-                <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+                <Cell 
+                  key={entry.name} 
+                  fill={COLORS[index % COLORS.length]}
+                  stroke="rgba(139, 92, 246, 0.2)"
+                  strokeWidth={2}
+                />
               ))}
             </Pie>
-            <Tooltip />
+            <Tooltip content={<CustomTooltip />} />
           </PieChart>
         </ResponsiveContainer>
       </div>
-      <div className="mt-2 flex gap-4 text-sm text-slate-600">
+      <div className="mt-4 flex flex-wrap justify-center gap-6 text-sm">
         {data.map((d, i) => (
           <span key={d.name} className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ background: COLORS[i] }} />
-            {d.name}
+            <span 
+              className="h-3 w-3 rounded-full shadow-lg" 
+              style={{ 
+                background: COLORS[i],
+                boxShadow: `0 0 10px ${COLORS[i]}50`
+              }} 
+            />
+            <span className="text-slate-300">{d.name}</span>
           </span>
         ))}
       </div>

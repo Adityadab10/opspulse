@@ -1,15 +1,40 @@
-@import url("https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
 
 :root {
-  --bg-1: #f8fafc;
-  --bg-2: #e2e8f0;
-  --ink-1: #0f172a;
-  --ink-2: #334155;
-  --brand: #0f766e;
-  --brand-soft: #ccfbf1;
-  --card: #ffffff;
-  --border: #e2e8f0;
+  /* Dark Theme - Modern */
+  --bg-primary: #0a0b14;
+  --bg-secondary: #13141f;
+  --bg-tertiary: #1a1b2e;
+  --bg-card: rgba(26, 27, 46, 0.6);
+  
+  /* Text Colors */
+  --text-primary: #f8f9fc;
+  --text-secondary: #a5a8be;
+  --text-muted: #6b6e88;
+  
+  /* Purple/Indigo Accents */
+  --brand-primary: #8b5cf6;
+  --brand-secondary: #6d28d9;
+  --brand-accent: #a78bfa;
+  --brand-glow: rgba(139, 92, 246, 0.3);
+  
+  /* Supporting Colors */
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+  
+  /* Borders & Overlays */
+  --border: rgba(139, 92, 246, 0.1);
+  --border-hover: rgba(139, 92, 246, 0.2);
+  --overlay: rgba(10, 11, 20, 0.8);
+  
+  /* Shadows */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --glow: 0 0 20px var(--brand-glow);
 }
 
 * {
@@ -18,15 +43,115 @@
 
 body {
   margin: 0;
-  font-family: "Sora", sans-serif;
-  color: var(--ink-1);
-  background:
-    radial-gradient(circle at 20% 20%, #cffafe 0%, transparent 30%),
-    radial-gradient(circle at 80% 0%, #dbeafe 0%, transparent 35%),
-    linear-gradient(140deg, var(--bg-1), var(--bg-2));
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--text-primary);
+  background: 
+    radial-gradient(ellipse at top right, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at bottom left, rgba(109, 40, 217, 0.08) 0%, transparent 50%),
+    var(--bg-primary);
   min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Animated gradient background */
+body::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: 
+    radial-gradient(circle at 20% 50%, rgba(139, 92, 246, 0.03) 0%, transparent 25%),
+    radial-gradient(circle at 80% 80%, rgba(109, 40, 217, 0.03) 0%, transparent 25%);
+  animation: drift 20s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-30px, -30px); }
+}
+
+@keyframes shine {
+  0% { left: -100%; }
+  100% { left: 200%; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-shine {
+  animation: shine 3s ease-in-out;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.8s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out forwards;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.5s ease-out forwards;
 }
 
 .page-shell {
   min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+/* Glass morphism effect */
+.glass {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+.glass:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Smooth transitions */
+* {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
