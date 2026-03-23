@@ -1,11 +1,26 @@
 import { NavLink, useNavigate } from "react-router-dom";
+import { signOut } from "firebase/auth";
+import { auth } from "../../firebase.config";
+import toast from "react-hot-toast";
 
 export default function Sidebar() {
   const navigate = useNavigate();
 
-  const signOut = () => {
-    localStorage.removeItem("inventory_user");
-    navigate("/login");
+  const handleLogout = async () => {
+    try {
+      // Sign out from Firebase first
+      await signOut(auth);
+      
+      // Clear localStorage
+      localStorage.removeItem("inventory_user");
+      
+      // Navigate to landing page
+      navigate("/", { replace: true });
+      toast.success("Logged out successfully!");
+    } catch (error) {
+      console.error("Logout error:", error);
+      toast.error("Logout failed. Please try again.");
+    }
   };
 
   const linkClass = ({ isActive }) =>
@@ -46,7 +61,7 @@ export default function Sidebar() {
       </nav>
 
       <button
-        onClick={signOut}
+        onClick={handleLogout}
         className="mt-8 w-full rounded-xl border border-purple-500/20 bg-purple-500/5 px-4 py-3 text-sm font-semibold text-slate-300 transition-all hover:border-purple-500/40 hover:bg-purple-500/10 hover:text-white"
       >
         Logout
