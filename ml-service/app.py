@@ -94,17 +94,14 @@ def predict():
         return jsonify({"error": "productId is required"}), 400
 
     product_id = data["productId"]
+    news_text = data.get("newsText", "")
 
     try:
-        prediction, min_value, max_value = predict_demand(product_id)
+        prediction_result = predict_demand(product_id, news_text=news_text)
 
-        print("Prediction:", prediction)
+        print("Prediction result:", prediction_result)
 
-        return jsonify({
-            "prediction": prediction,
-            "min": min_value,
-            "max": max_value
-        }), 200
+        return jsonify(prediction_result), 200
 
     except ValueError as e:
         print("ValueError:", str(e))
