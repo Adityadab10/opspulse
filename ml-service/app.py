@@ -112,6 +112,28 @@ def predict():
         return jsonify({"error": "Prediction failed"}), 500
 
 
+@app.route("/api/predict/<product_id>", methods=["POST", "GET"])
+def predict_legacy(product_id):
+    print(f"\n--- /api/predict/{product_id} legacy endpoint was called ---")
+
+    if predict_demand is None:
+        return jsonify({"error": "Prediction service not available"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    news_text = payload.get("newsText", "")
+
+    try:
+        prediction_result = predict_demand(product_id, news_text=news_text)
+        print("Prediction result:", prediction_result)
+        return jsonify(prediction_result), 200
+    except ValueError as e:
+        print("ValueError:", str(e))
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        print("Exception:", str(e))
+        return jsonify({"error": "Prediction failed"}), 500
+
+
 # ------------------ DEBUG ROUTES PRINT ------------------
 
 def print_routes():

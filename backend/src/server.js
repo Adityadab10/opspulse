@@ -9,6 +9,10 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import alertRoutes from "./routes/alertRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import predictionRoutes from "./routes/predictionRoutes.js";
+import {
+  predictAllProducts,
+  predictByProduct,
+} from "./controllers/predictionController.js";
 
 
 
@@ -31,7 +35,12 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/upload", uploadRoutes);
-app.use("/api", predictionRoutes);
+app.use("/api/predictions", predictionRoutes);
+app.post("/api/predict-all", predictAllProducts);
+
+// Backward-compatible aliases for legacy clients still calling old endpoints.
+app.post("/api/predict/:productId", predictByProduct);
+app.get("/api/predict/:productId", predictByProduct);
 
 // DB connection
 mongoose

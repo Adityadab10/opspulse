@@ -12,6 +12,14 @@ export const dashboardApi = {
 
 export const productsApi = {
   getAnalysis: () => api.get("/products/analysis"),
+  getAll: () => api.get("/products"),
+};
+
+export const predictionApi = {
+  getPredictions: (params = {}) => api.get("/predictions", { params }),
+  runPrediction: (productId, params = {}) =>
+    api.post(`/predictions/predict/${encodeURIComponent(productId)}`, {}, { params }),
+  runAllPredictions: (params = {}) => api.post("/predict-all", {}, { params }),
 };
 
 export const alertsApi = {

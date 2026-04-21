@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+import logging
 
 import pandas as pd
 from joblib import load
@@ -11,6 +12,21 @@ from newsService import analyze_news
 
 MODEL_PATH = Path(__file__).with_name("demand_decision_rf.joblib")
 DEFAULT_NEWS_TEXT = "Heatwave expected across India next month"
+FORECAST_HORIZON_DAYS = 30
+
+IMPACT_MULTIPLIERS = {
+    "increase": 1.15,
+    "decrease": 0.85,
+    "neutral": 1.0,
+}
+
+DEFAULT_CATEGORY_ENCODINGS = {
+    "trend": {"decreasing": 0, "stable": 1, "increasing": 2},
+    "season": {"winter": 0, "normal": 1, "summer": 2},
+    "keywordImpact": {"decrease": 0, "neutral": 1, "increase": 2},
+}
+
+logger = logging.getLogger(__name__)
 
 
 def _calculate_percent_change(current_value, previous_value):
@@ -43,6 +59,63 @@ def _normalize_category(value):
     return str(value).strip().lower()
 
 
+def _prepare_prophet_dataframe(raw_docs):
+    df = pd.DataFrame(raw_docs)
+
+    if "date" not in df.columns or "quantity" not in df.columns:
+        raise ValueError("Sales documents must include date and quantity fields")
+
+    df["ds"] = pd.to_datetime(df["date"], errors="coerce")
+    df["y"] = pd.to_numeric(df["quantity"], errors="coerce")
+
+    df = df.dropna(subset=["ds", "y"])
+    df = df.groupby("ds", as_index=False)["y"].sum().sort_values("ds")
+
+    if len(df) < 2:
+        raise ValueError(
+            "Not enough valid data points to train Prophet model (need at least 2 rows)"
+        )
+
+    return df
+
+
+def _generate_forecast_with_prophet(df):
+    model = Prophet()
+    model.fit(df[["ds", "y"]])
+
+    future = model.make_future_dataframe(periods=FORECAST_HORIZON_DAYS, freq="D")
+    forecast = model.predict(future)
+    next_window = forecast.tail(FORECAST_HORIZON_DAYS)
+
+    return max(0, int(round(next_window["yhat"].sum())))
+
+
+def _resolve_signal_impact(news_text):
+    text_for_analysis = news_text or DEFAULT_NEWS_TEXT
+
+    try:
+        signal = analyze_news(text_for_analysis)
+    except Exception:
+        logger.exception("News signal analysis failed; defaulting impact to neutral")
+        return "neutral"
+
+    impact = "neutral"
+    if isinstance(signal, dict):
+        impact = _normalize_category(signal.get("impact", "neutral"))
+
+    if impact not in IMPACT_MULTIPLIERS:
+        logger.warning("Unsupported impact '%s' from news signal; defaulting to neutral", impact)
+        return "neutral"
+
+    return impact
+
+
+def _adjust_forecast_by_signal(forecast, impact):
+    multiplier = IMPACT_MULTIPLIERS.get(impact, 1.0)
+    adjusted = int(round(float(forecast) * multiplier))
+    return max(0, adjusted)
+
+
 def _load_decision_artifact():
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
@@ -52,129 +125,137 @@ def _load_decision_artifact():
     return load(str(MODEL_PATH))
 
 
-def _predict_decision(trend, season, keyword_impact, forecast_value):
-    try:
-        # Required model load contract.
-        bundle = _load_decision_artifact()
-        model = bundle["model"]
-        label_encoder = bundle["label_encoder"]
-        feature_encoders = bundle.get("feature_encoders")
+def _encode_categorical_feature(feature_encoders, column, raw_value):
+    normalized = _normalize_category(raw_value)
 
-        encoded_trend = _normalize_category(trend)
-        encoded_season = _normalize_category(season)
-        encoded_impact = _normalize_category(keyword_impact)
+    if feature_encoders and column in feature_encoders:
+        encoder = feature_encoders[column]
+        if normalized not in encoder.classes_:
+            supported = ", ".join(str(item) for item in encoder.classes_)
+            raise ValueError(
+                f"Unsupported value for {column}: '{normalized}'. Supported: {supported}"
+            )
+        return int(encoder.transform([normalized])[0])
 
-        # Encode categorical features using stored encoders when available.
-        if feature_encoders:
-            encoded_trend = int(feature_encoders["trend"].transform([encoded_trend])[0])
-            encoded_season = int(feature_encoders["season"].transform([encoded_season])[0])
-            encoded_impact = int(feature_encoders["keywordImpact"].transform([encoded_impact])[0])
+    fallback_map = DEFAULT_CATEGORY_ENCODINGS.get(column, {})
+    if normalized not in fallback_map:
+        supported = ", ".join(fallback_map.keys())
+        raise ValueError(
+            f"Unsupported value for {column}: '{normalized}'. Supported: {supported}"
+        )
+    return int(fallback_map[normalized])
 
-        features = [
-            encoded_trend,
-            encoded_season,
-            encoded_impact,
-            float(forecast_value),
-        ]
 
-        prediction = model.predict([features])
-        decision = label_encoder.inverse_transform(prediction)[0]
-        return decision
-    except Exception as error:
-        print(f"[predict] Decision model inference failed: {error}")
-        return "maintain"
+def _prepare_feature_vector(trend, season, keyword_impact, forecast_value, feature_encoders):
+    encoded_trend = _encode_categorical_feature(feature_encoders, "trend", trend)
+    encoded_season = _encode_categorical_feature(feature_encoders, "season", season)
+    encoded_impact = _encode_categorical_feature(
+        feature_encoders,
+        "keywordImpact",
+        keyword_impact,
+    )
+
+    return [
+        encoded_trend,
+        encoded_season,
+        encoded_impact,
+        float(forecast_value),
+    ]
+
+
+def _predict_decision_and_confidence(bundle, features):
+    model = bundle["model"]
+    label_encoder = bundle["label_encoder"]
+
+    prediction = model.predict([features])
+    decision = label_encoder.inverse_transform(prediction)[0]
+
+    confidence = 1.0
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba([features])[0]
+        confidence = round(float(max(probabilities)), 4)
+
+    return decision, confidence
+
 
 def predict_demand(product_id: str, news_text: str = ""):
     """
-    Forecast product demand for the next 30 days using Facebook Prophet.
-    
+    Unified decision pipeline:
+    1) fetch sales data from MongoDB
+    2) generate Prophet forecast
+    3) analyze external news signal
+    4) adjust forecast based on signal
+    5) run Random Forest decision model
+
     Args:
         product_id: Product ID to forecast
-        
+
     Returns:
         dict: {
-            "prediction": int,
-            "adjustedPrediction": int,
-            "decision": "increase|maintain|reduce",
+            "forecast": int,
+            "adjustedForecast": int,
             "impact": "increase|decrease|neutral",
+            "decision": "increase|maintain|reduce",
+            "confidence": float,
         }
-        
+
     Raises:
         ValueError: If insufficient data or product not found
     """
-    docs = get_sales_data(product_id)
-    print(f"[predict] Raw sales docs fetched for {product_id}: {len(docs)}")
+    try:
+        docs = get_sales_data(product_id)
+        logger.info("Fetched %s sales rows for productId=%s", len(docs), product_id)
 
-    df = pd.DataFrame(docs)
+        df = _prepare_prophet_dataframe(docs)
+        logger.info("Prepared %s clean rows for Prophet", len(df))
 
-    if "date" not in df.columns or "quantity" not in df.columns:
-        raise ValueError("Sales documents must include date and quantity fields")
+        forecast_value = _generate_forecast_with_prophet(df)
 
-    # Convert to Prophet format: ds (date), y (quantity)
-    df["ds"] = pd.to_datetime(df["date"], errors="coerce")
-    df["y"] = pd.to_numeric(df["quantity"], errors="coerce")
+        impact = _resolve_signal_impact(news_text)
+        adjusted_forecast = _adjust_forecast_by_signal(forecast_value, impact)
 
-    # Remove invalid rows and aggregate same-day sales
-    df = df.dropna(subset=["ds", "y"])
-    df = df.groupby("ds", as_index=False)["y"].sum().sort_values("ds")
-
-    print(f"[predict] Rows passed to Prophet after cleanup/grouping: {len(df)}")
-
-    if len(df) < 2:
-        raise ValueError("Not enough valid data points to train Prophet model (need at least 2 rows)")
-
-    # Train Prophet model
-    model = Prophet()
-    model.fit(df[["ds", "y"]])
-
-    # Generate forecast for next 30 days
-    future = model.make_future_dataframe(periods=30, freq="D")
-    forecast = model.predict(future)
-
-    next_30 = forecast.tail(30)
-
-    # Calculate predictions (sum of daily forecasts for 30 days)
-    base_prediction = max(0, int(round(next_30["yhat"].sum())))
-
-    # External signal (kept deterministic with fallback sample text).
-    if not news_text:
-        news_text = DEFAULT_NEWS_TEXT
-
-    signal = analyze_news(news_text)
-
-    impact = "neutral"
-    adjusted_prediction = base_prediction
-
-    if isinstance(signal, dict):
-        impact = signal.get("impact", "neutral")
-
-    if impact == "increase":
-        adjusted_prediction = int(round(base_prediction * 1.15))
-    elif impact == "decrease":
-        adjusted_prediction = int(round(base_prediction * 0.85))
-
-    adjusted_prediction = max(0, adjusted_prediction)
-
-    if len(df) >= 2:
         percent_change = _calculate_percent_change(df["y"].iloc[-1], df["y"].iloc[-2])
-    else:
-        percent_change = 0.0
+        trend = _trend_from_percent_change(percent_change)
+        season = _season_from_month(datetime.now().month)
 
-    trend = _trend_from_percent_change(percent_change)
+        bundle = _load_decision_artifact()
+        feature_encoders = bundle.get("feature_encoders")
 
-    current_month = datetime.now().month
-    season = _season_from_month(current_month)
+        # Use adjusted forecast to represent final demand context after signal impact.
+        feature_vector = _prepare_feature_vector(
+            trend=trend,
+            season=season,
+            keyword_impact=impact,
+            forecast_value=adjusted_forecast,
+            feature_encoders=feature_encoders,
+        )
 
-    decision = _predict_decision(
-        trend=trend,
-        season=season,
-        keyword_impact=impact,
-        forecast_value=base_prediction,
-    )
+        decision, confidence = _predict_decision_and_confidence(bundle, feature_vector)
 
-    return {
-        "prediction": base_prediction,
-        "adjustedPrediction": adjusted_prediction,
-        "decision": decision,
-        "impact": impact,
-    }
+        result = {
+            "forecast": forecast_value,
+            "adjustedForecast": adjusted_forecast,
+            "impact": impact,
+            "decision": decision,
+            "confidence": confidence,
+        }
+
+        logger.info(
+            "Pipeline complete for productId=%s; impact=%s, decision=%s, confidence=%s",
+            product_id,
+            impact,
+            decision,
+            confidence,
+        )
+        return result
+
+    except ValueError:
+        logger.warning(
+            "Validation error while predicting demand for productId=%s",
+            product_id,
+            exc_info=True,
+        )
+        raise
+    except Exception as exc:
+        logger.exception("Prediction pipeline failed for productId=%s", product_id)
+        raise RuntimeError("Failed to generate demand prediction") from exc
