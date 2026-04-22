@@ -22,6 +22,10 @@ export const predictionApi = {
   runAllPredictions: (params = {}) => api.post("/predict-all", {}, { params }),
 };
 
+export const newsApi = {
+  getProductNews: (productId) => api.get(`/news/${encodeURIComponent(productId)}`),
+};
+
 export const alertsApi = {
   getAlerts: () => api.get("/alerts"),
 };

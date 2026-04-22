@@ -18,6 +18,7 @@ if not DB_NAME:
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db = client[DB_NAME]
 sales_collection = db["sales"]
+products_collection = db["products"]
 
 
 def _safe_str(value):
@@ -227,6 +228,21 @@ def get_sales_data(product_id: str):
 
     print("[mongo] Matched sales docs:", len(docs))
     return docs
+
+
+def get_product_name(product_id: str):
+    """Fetch product name for a given product ID. Returns None when unavailable."""
+    try:
+        query, _ = build_product_query(product_id)
+        product = products_collection.find_one(query, {"_id": 0, "name": 1})
+        name = product.get("name") if isinstance(product, dict) else None
+        if isinstance(name, str):
+            normalized = name.strip()
+            return normalized or None
+        return None
+    except Exception as exc:
+        print("[mongo] Failed to resolve product name:", str(exc))
+        return None
 
 
 _diagnostics = get_db_diagnostics()

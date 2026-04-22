@@ -69,6 +69,8 @@ const formatFactorValue = (value) => {
 export default function ProductTable({
   rows,
   onRunPrediction,
+  onViewNews,
+  newsLoadingById = {},
   predictionLoadingById = {},
   predictionResultsById = {},
   predictionErrorById = {},
@@ -95,6 +97,7 @@ export default function ProductTable({
               const d = getDecision(row.percentChange);
               const rowId = row?.productId;
               const loading = Boolean(predictionLoadingById?.[rowId]);
+              const newsLoading = Boolean(newsLoadingById?.[rowId]);
               const prediction = predictionResultsById?.[rowId];
               const predictionError = predictionErrorById?.[rowId];
 
@@ -113,17 +116,37 @@ export default function ProductTable({
                       </span>
                     </td>
                     <td className="px-4 py-4">
-                      <button
-                        type="button"
-                        onClick={() => onRunPrediction?.(rowId)}
-                        disabled={loading || !rowId}
-                        className="inline-flex items-center gap-2 rounded-lg bg-indigo-500/20 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {loading && (
-                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200/40 border-t-indigo-200"></span>
-                        )}
-                        {loading ? "Running..." : "Run Prediction"}
-                      </button>
+                      <div className="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onRunPrediction?.(rowId)}
+                          disabled={loading || !rowId}
+                          className="inline-flex items-center gap-2 rounded-lg bg-indigo-500/20 px-3 py-2 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {loading && (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200/40 border-t-indigo-200"></span>
+                          )}
+                          {loading ? "Running..." : "Run Prediction"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onViewNews?.({
+                              productId: rowId,
+                              name: row?.name,
+                              category: row?.category,
+                            })
+                          }
+                          disabled={newsLoading || !rowId}
+                          className="inline-flex items-center gap-2 rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {newsLoading && (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan-100/40 border-t-cyan-100"></span>
+                          )}
+                          {newsLoading ? "Loading..." : "View News"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
 
@@ -173,6 +196,20 @@ export default function ProductTable({
                                   {formatConfidence(prediction?.confidence)}
                                 </p>
                               </div>
+                              <div>
+                                <p className="text-xs uppercase tracking-wide text-slate-400">News Score</p>
+                                <p className="mt-1 text-sm font-semibold text-white">
+                                  {Number.isFinite(Number(prediction?.score))
+                                    ? Number(prediction.score).toFixed(1)
+                                    : "0.0"}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-xs uppercase tracking-wide text-slate-400">Keyword</p>
+                                <p className="mt-1 text-sm font-semibold text-white">
+                                  {prediction?.keyword || "none"}
+                                </p>
+                              </div>
                             </div>
 
                             <div>
@@ -204,6 +241,13 @@ export default function ProductTable({
                                 ) : null}
                               </div>
                             </div>
+
+                            {prediction?.sourceHeadline ? (
+                              <div>
+                                <p className="text-xs uppercase tracking-wide text-slate-400">Source Headline</p>
+                                <p className="mt-1 text-sm text-slate-200">{prediction.sourceHeadline}</p>
+                              </div>
+                            ) : null}
                           </div>
                         )}
                       </td>

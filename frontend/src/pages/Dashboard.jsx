@@ -14,8 +14,9 @@ import KPIcard from "../components/KPIcard";
 import LineChart from "../components/LineChart";
 import DonutChart from "../components/DonutChart";
 import ProductTable from "../components/ProductTable";
+import NewsPanel from "../components/NewsPanel";
 import AlertList from "../components/AlertList";
-import { alertsApi, dashboardApi, predictionApi, productsApi } from "../services/api";
+import { alertsApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
 
 const mergeAnalysisWithProducts = (analysisRows, products) => {
   const bucket = new Map();
@@ -31,10 +32,16 @@ const mergeAnalysisWithProducts = (analysisRows, products) => {
   return analysisRows.map((row) => {
     const key = `${row?.name || ""}::${row?.category || ""}`;
     const candidate = bucket.get(key)?.shift();
+    const existingRowId =
+      row?.productId?._id ||
+      row?.productId ||
+      row?._id ||
+      row?.id ||
+      null;
 
     return {
       ...row,
-      productId: candidate?._id || null,
+      productId: existingRowId || candidate?._id || null,
     };
   });
 };
@@ -69,6 +76,15 @@ const normalizePredictionPayload = (payload, fallbackProductId) => {
     decision: response.decision ?? "maintain",
     impact: response.impact ?? "neutral",
     confidence: response.confidence ?? null,
+    keyword: response.keyword ?? null,
+    score: toNumber(response.score, 0),
+    sourceHeadline: response.sourceHeadline ?? null,
+    sourceHeadlines: Array.isArray(response.sourceHeadlines) ? response.sourceHeadlines : [],
+    matchedKeywords: Array.isArray(response.keywords)
+      ? response.keywords
+      : Array.isArray(response.matchedKeywords)
+        ? response.matchedKeywords
+        : [],
     reason: response.reason ?? "No explanation available.",
     contributingFactors: normalizedFactors,
     predictionSource: response.predictionSource ?? "rule-based",
@@ -182,6 +198,13 @@ export default function Dashboard() {
   const [predictionLoadingById, setPredictionLoadingById] = useState({});
   const [predictionResultsById, setPredictionResultsById] = useState({});
   const [predictionErrorById, setPredictionErrorById] = useState({});
+  const [newsLoadingById, setNewsLoadingById] = useState({});
+  const [newsPanelOpen, setNewsPanelOpen] = useState(false);
+  const [newsPanelLoading, setNewsPanelLoading] = useState(false);
+  const [newsPanelError, setNewsPanelError] = useState("");
+  const [newsPanelData, setNewsPanelData] = useState(null);
+  const [newsPanelProduct, setNewsPanelProduct] = useState(null);
+  const [selectedNewsProductId, setSelectedNewsProductId] = useState("");
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -201,6 +224,14 @@ export default function Dashboard() {
 
       setSummary(summaryRes?.data || {});
       setAnalysis(mergedAnalysis);
+      setSelectedNewsProductId((prev) => {
+        if (prev && mergedAnalysis.some((item) => String(item?.productId || "") === String(prev))) {
+          return prev;
+        }
+
+        const firstWithId = mergedAnalysis.find((item) => item?.productId);
+        return firstWithId?.productId || "";
+      });
       setAlerts(Array.isArray(alertsRes?.data) ? alertsRes.data : []);
     } catch (err) {
       console.error("Dashboard fetch error:", err);
@@ -346,6 +377,108 @@ export default function Dashboard() {
     }
   };
 
+  const openProductNews = async (productInfo) => {
+    const productId = productInfo?.productId;
+    if (!productId) {
+      toast.error("Missing product ID for news lookup.");
+      return;
+    }
+
+    setNewsPanelOpen(true);
+    setNewsPanelLoading(true);
+    setNewsPanelError("");
+    setNewsPanelData(null);
+    setNewsPanelProduct({
+      name: productInfo?.name || "Selected product",
+      category: productInfo?.category || "",
+    });
+    setNewsLoadingById((prev) => ({ ...prev, [productId]: true }));
+
+    try {
+      const response = await newsApi.getProductNews(productId);
+      const payload = response?.data?.data ?? response?.data ?? {};
+      const matchingPrediction = predictions.find((row) => {
+        const existingId =
+          typeof row?.productId === "object"
+            ? row?.productId?._id || row?.productId?.id
+            : row?.productId;
+        return String(existingId || "") === String(productId);
+      });
+
+      const panelKeywords = Array.isArray(payload?.keywords)
+        ? payload.keywords
+        : Array.isArray(payload?.matchedKeywords)
+          ? payload.matchedKeywords
+          : [];
+
+      setNewsPanelData({
+        product: payload?.product || {
+          name: productInfo?.name || "Selected product",
+          category: productInfo?.category || "",
+        },
+        headlines: Array.isArray(payload?.headlines) ? payload.headlines : [],
+        impact: payload?.impact || "neutral",
+        keyword: payload?.keyword || null,
+        matchedKeywords: panelKeywords,
+        suggestion: payload?.suggestion || "Maintain stock",
+        adjustedPrediction: toNumber(
+          payload?.adjustedPrediction,
+          matchingPrediction?.adjustedPrediction ?? null
+        ),
+      });
+    } catch (error) {
+      const message =
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        "Failed to fetch news";
+      setNewsPanelError(message);
+    } finally {
+      setNewsPanelLoading(false);
+      setNewsLoadingById((prev) => ({ ...prev, [productId]: false }));
+    }
+  };
+
+  const retryNewsPanel = async () => {
+    if (!newsPanelProduct?.name) {
+      return;
+    }
+
+    const rowMatch = analysis.find(
+      (row) =>
+        String(row?.name || "").toLowerCase() === String(newsPanelProduct?.name || "").toLowerCase() &&
+        String(row?.category || "").toLowerCase() === String(newsPanelProduct?.category || "").toLowerCase()
+    );
+
+    if (!rowMatch?.productId) {
+      setNewsPanelError("Unable to locate product for retry.");
+      return;
+    }
+
+    await openProductNews({
+      productId: rowMatch.productId,
+      name: rowMatch.name,
+      category: rowMatch.category,
+    });
+  };
+
+  const openSelectedNewsProduct = async () => {
+    const rowMatch = analysis.find(
+      (row) => String(row?.productId || "") === String(selectedNewsProductId || "")
+    );
+
+    if (!rowMatch?.productId) {
+      toast.error("Select a product with a valid ID to view news insights.");
+      return;
+    }
+
+    await openProductNews({
+      productId: rowMatch.productId,
+      name: rowMatch.name,
+      category: rowMatch.category,
+    });
+  };
+
   const decisionCounts = useMemo(
     () =>
       predictions.reduce(
@@ -478,6 +611,45 @@ export default function Dashboard() {
           <KPIcard title="Recommendations Ready" value={summary.recommendationsReady ?? 0} />
         </section>
 
+        <section id="news-insights" className="glass rounded-2xl p-6 transition-all hover:border-cyan-500/40">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="bg-gradient-to-r from-cyan-100 to-cyan-300 bg-clip-text text-xl font-bold text-transparent">
+                News Insights
+              </h3>
+              <p className="mt-1 text-sm text-slate-400">
+                Pick a product to fetch headlines and get an AI stock suggestion.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openSelectedNewsProduct}
+              disabled={!selectedNewsProductId}
+              className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500/20 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              View News Insights
+            </button>
+          </div>
+
+          <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Product
+          </label>
+          <select
+            value={selectedNewsProductId}
+            onChange={(event) => setSelectedNewsProductId(event.target.value)}
+            className="w-full rounded-xl border border-slate-500/30 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400/50"
+          >
+            {!selectedNewsProductId && <option value="">Select a product</option>}
+            {analysis
+              .filter((row) => row?.productId)
+              .map((row, index) => (
+                <option key={`${row.productId}-${index}`} value={row.productId}>
+                  {row.name} ({row.category})
+                </option>
+              ))}
+          </select>
+        </section>
+
         {/* Charts Section */}
         <section className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
@@ -580,11 +752,24 @@ export default function Dashboard() {
                       <span className="rounded-full border border-slate-500/30 bg-slate-500/10 px-2.5 py-1 font-semibold text-slate-200">
                         Confidence: {formatConfidence(item?.confidence)}
                       </span>
+                      <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 font-semibold text-cyan-100">
+                        News Score: {toNumber(item?.score, 0).toFixed(1)}
+                      </span>
+                      {item?.keyword ? (
+                        <span className="rounded-full border border-purple-500/30 bg-purple-500/10 px-2.5 py-1 font-semibold text-purple-100">
+                          Keyword: {item.keyword}
+                        </span>
+                      ) : null}
                     </div>
 
                     <p className="mt-3 text-sm text-slate-200">
                       {item?.reason || "No explanation available."}
                     </p>
+                    {item?.sourceHeadline ? (
+                      <p className="mt-2 text-xs text-slate-400">
+                        Source: {item.sourceHeadline}
+                      </p>
+                    ) : null}
                   </div>
                 );
               })}
@@ -626,6 +811,7 @@ export default function Dashboard() {
                     <th className="px-4 py-4 font-semibold text-slate-300">Adjusted Prediction</th>
                     <th className="px-4 py-4 font-semibold text-slate-300">Decision</th>
                     <th className="px-4 py-4 font-semibold text-slate-300">Impact</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">News Signal</th>
                     <th className="px-4 py-4 font-semibold text-slate-300">Explanation</th>
                     <th className="px-4 py-4 font-semibold text-slate-300">Factors</th>
                   </tr>
@@ -656,6 +842,27 @@ export default function Dashboard() {
                         <span className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${getImpactBadgeClass(row?.impact)}`}>
                           {formatImpact(row?.impact)}
                         </span>
+                      </td>
+                      <td className="max-w-xs px-4 py-4">
+                        <div className="space-y-1.5 text-xs text-slate-200">
+                          <p>Score: {toNumber(row?.score, 0).toFixed(1)}</p>
+                          {row?.keyword ? <p>Keyword: {row.keyword}</p> : <p>Keyword: none</p>}
+                          <div className="flex flex-wrap gap-1.5">
+                            {(Array.isArray(row?.matchedKeywords) ? row.matchedKeywords : [])
+                              .slice(0, 3)
+                              .map((keyword, idx) => (
+                                <span
+                                  key={`${keyword}-${idx}`}
+                                  className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-100"
+                                >
+                                  {keyword}
+                                </span>
+                              ))}
+                          </div>
+                          {row?.sourceHeadline ? (
+                            <p className="line-clamp-2 text-slate-400">{row.sourceHeadline}</p>
+                          ) : null}
+                        </div>
                       </td>
                       <td className="max-w-sm px-4 py-4 text-slate-200">
                         <p className="line-clamp-3">{row?.reason || "No explanation available."}</p>
@@ -695,6 +902,8 @@ export default function Dashboard() {
             <ProductTable
               rows={analysis}
               onRunPrediction={runPrediction}
+              onViewNews={openProductNews}
+              newsLoadingById={newsLoadingById}
               predictionLoadingById={predictionLoadingById}
               predictionResultsById={predictionResultsById}
               predictionErrorById={predictionErrorById}
@@ -702,6 +911,15 @@ export default function Dashboard() {
           </div>
           <AlertList alerts={alerts} />
         </section>
+
+        <NewsPanel
+          isOpen={newsPanelOpen}
+          isLoading={newsPanelLoading}
+          error={newsPanelError}
+          data={newsPanelData || { product: newsPanelProduct }}
+          onClose={() => setNewsPanelOpen(false)}
+          onRetry={retryNewsPanel}
+        />
       </main>
     </div>
   );

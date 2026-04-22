@@ -58,6 +58,12 @@ export default function Sidebar() {
             <span>Alerts</span>
           </span>
         </NavLink>
+        <NavLink to="/dashboard#news-insights" className={linkClass}>
+          <span className="flex items-center space-x-2">
+            <span>📰</span>
+            <span>News Insights</span>
+          </span>
+        </NavLink>
       </nav>
 
       <button

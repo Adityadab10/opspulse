@@ -6,7 +6,8 @@ import pandas as pd
 from joblib import load
 from prophet import Prophet
 
-from mongoService import get_sales_data
+from mongoService import get_product_name, get_sales_data
+from newsFetcher import fetch_product_news
 from newsService import analyze_news
 
 
@@ -27,6 +28,11 @@ DEFAULT_CATEGORY_ENCODINGS = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_impact(value):
+    normalized = _normalize_category(value)
+    return normalized if normalized in IMPACT_MULTIPLIERS else "neutral"
 
 
 def _calculate_percent_change(current_value, previous_value):
@@ -90,29 +96,106 @@ def _generate_forecast_with_prophet(df):
     return max(0, int(round(next_window["yhat"].sum())))
 
 
-def _resolve_signal_impact(news_text):
-    text_for_analysis = news_text or DEFAULT_NEWS_TEXT
+def _resolve_news_signal(product_id, news_text):
+    """Resolve keyword + impact from product-specific headlines with safe neutral fallback."""
+    fallback = {
+        "impact": "neutral",
+        "keywords": ["stable demand"],
+        "keyword": "stable demand",
+        "sourceHeadline": None,
+        "sourceHeadlines": [],
+        "matchedKeywords": ["stable demand"],
+        "score": 5.0,
+        "source": "fallback",
+        "combinedText": "",
+    }
 
     try:
-        signal = analyze_news(text_for_analysis)
+        product_name = get_product_name(product_id) or ""
+
+        print("Product:", product_name)
+
+        if news_text and news_text.strip():
+            headlines = [line.strip() for line in news_text.splitlines() if line.strip()]
+            if not headlines:
+                headlines = [news_text.strip()]
+            source = "manual"
+        else:
+            if not product_name:
+                logger.warning(
+                    "Product name unavailable for productId=%s; using neutral impact",
+                    product_id,
+                )
+                return fallback
+
+            fetched = fetch_product_news(product_name)
+            if isinstance(fetched, dict):
+                headlines = fetched.get("headlines") or []
+                source = str(fetched.get("source") or "fallback")
+            elif isinstance(fetched, list):
+                headlines = fetched
+                source = "unknown"
+            else:
+                headlines = []
+                source = "fallback"
+
+            if not headlines:
+                logger.warning(
+                    "No news headlines fetched for product=%s; using neutral impact",
+                    product_name,
+                )
+                return fallback
+
+        headlines = headlines[:5]
+        combined_text = " ".join(headlines).strip()
+
+        if not combined_text:
+            return fallback
+
+        signal = analyze_news(headlines=headlines, product_name=product_name)
+        if not isinstance(signal, dict):
+            return fallback
+
+        source_headlines = signal.get("sourceHeadlines")
+        if not isinstance(source_headlines, list):
+            source_headlines = headlines
+
+        matched_keywords = signal.get("keywords")
+        if not isinstance(matched_keywords, list):
+            matched_keywords = signal.get("matchedKeywords")
+        if not isinstance(matched_keywords, list):
+            matched_keywords = []
+
+        resolved_keyword = signal.get("keyword")
+        if not resolved_keyword and matched_keywords:
+            resolved_keyword = matched_keywords[0]
+
+        score = float(signal.get("score", 5.0))
+        impact = _sanitize_impact(signal.get("impact", "neutral"))
+
+        print("Headlines:", source_headlines)
+        print("Score:", score)
+        print("Impact:", impact)
+
+        return {
+            "impact": impact,
+            "keywords": matched_keywords,
+            "keyword": resolved_keyword,
+            "sourceHeadline": source_headlines[0] if source_headlines else headlines[0],
+            "sourceHeadlines": source_headlines,
+            "matchedKeywords": matched_keywords,
+            "score": score,
+            "source": source,
+            "combinedText": combined_text,
+        }
     except Exception:
-        logger.exception("News signal analysis failed; defaulting impact to neutral")
-        return "neutral"
-
-    impact = "neutral"
-    if isinstance(signal, dict):
-        impact = _normalize_category(signal.get("impact", "neutral"))
-
-    if impact not in IMPACT_MULTIPLIERS:
-        logger.warning("Unsupported impact '%s' from news signal; defaulting to neutral", impact)
-        return "neutral"
-
-    return impact
+        logger.exception("News signal resolution failed; defaulting impact to neutral")
+        return fallback
 
 
-def _adjust_forecast_by_signal(forecast, impact):
-    multiplier = IMPACT_MULTIPLIERS.get(impact, 1.0)
-    adjusted = int(round(float(forecast) * multiplier))
+def _adjust_forecast_by_score(forecast, score):
+    adjusted = float(forecast) + (float(forecast) * float(score) / 100.0)
+    adjusted = int(round(adjusted))
     return max(0, adjusted)
 
 
@@ -211,8 +294,9 @@ def predict_demand(product_id: str, news_text: str = ""):
 
         forecast_value = _generate_forecast_with_prophet(df)
 
-        impact = _resolve_signal_impact(news_text)
-        adjusted_forecast = _adjust_forecast_by_signal(forecast_value, impact)
+        news_signal = _resolve_news_signal(product_id=product_id, news_text=news_text)
+        impact = news_signal["impact"]
+        adjusted_forecast = _adjust_forecast_by_score(forecast_value, news_signal.get("score", 5.0))
 
         percent_change = _calculate_percent_change(df["y"].iloc[-1], df["y"].iloc[-2])
         trend = _trend_from_percent_change(percent_change)
@@ -233,9 +317,18 @@ def predict_demand(product_id: str, news_text: str = ""):
         decision, confidence = _predict_decision_and_confidence(bundle, feature_vector)
 
         result = {
+            "prediction": forecast_value,
             "forecast": forecast_value,
+            "adjustedPrediction": adjusted_forecast,
             "adjustedForecast": adjusted_forecast,
             "impact": impact,
+            "keywords": news_signal.get("keywords", []),
+            "headlines": news_signal.get("sourceHeadlines", []),
+            "keyword": news_signal.get("keyword"),
+            "sourceHeadline": news_signal.get("sourceHeadline"),
+            "sourceHeadlines": news_signal.get("sourceHeadlines", []),
+            "matchedKeywords": news_signal.get("matchedKeywords", []),
+            "score": news_signal.get("score", 0.0),
             "decision": decision,
             "confidence": confidence,
         }

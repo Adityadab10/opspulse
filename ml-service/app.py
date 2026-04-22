@@ -34,6 +34,27 @@ except Exception as e:
     get_db_diagnostics = None
     get_raw_sales_data = None
 
+try:
+    from newsFetcher import fetch_product_news
+    print("✅ newsFetcher imported successfully")
+except Exception as e:
+    print("❌ Error importing newsFetcher:", str(e))
+    fetch_product_news = None
+
+try:
+    from newsScraper import scrape_google_news_headlines
+    print("✅ newsScraper imported successfully")
+except Exception as e:
+    print("❌ Error importing newsScraper:", str(e))
+    scrape_google_news_headlines = None
+
+try:
+    from newsService import analyze_news
+    print("✅ newsService imported successfully")
+except Exception as e:
+    print("❌ Error importing newsService:", str(e))
+    analyze_news = None
+
 
 def _serialize_for_json(value):
     if isinstance(value, ObjectId):
@@ -132,6 +153,107 @@ def predict_legacy(product_id):
     except Exception as e:
         print("Exception:", str(e))
         return jsonify({"error": "Prediction failed"}), 500
+
+
+@app.route("/news-insights", methods=["POST", "GET"])
+def news_insights():
+    print("\n--- /news-insights endpoint was called ---")
+
+    payload = request.get_json(silent=True) or {}
+    product_name = payload.get("productName") if isinstance(payload, dict) else None
+    if not product_name:
+        product_name = request.args.get("productName")
+
+    product_name = (product_name or "").strip()
+    if not product_name:
+        return jsonify({"error": "productName is required"}), 400
+
+    headlines = []
+    source = "fallback"
+
+    try:
+        if fetch_product_news:
+            fetched = fetch_product_news(product_name)
+            if isinstance(fetched, dict):
+                headlines = fetched.get("headlines") or []
+                source = str(fetched.get("source") or "fallback")
+            elif isinstance(fetched, list):
+                headlines = fetched
+                source = "unknown"
+
+        if not headlines and scrape_google_news_headlines:
+            headlines = scrape_google_news_headlines(product_name)
+            source = "bing"
+
+        headlines = [item.strip() for item in headlines if isinstance(item, str) and item.strip()][:5]
+
+        signal = {
+            "impact": "neutral",
+            "score": 5.0,
+            "keywords": ["stable demand"],
+            "matchedKeywords": ["stable demand"],
+            "sourceHeadlines": headlines,
+            "headlines": headlines,
+            "keyword": "stable demand",
+        }
+
+        if analyze_news:
+            signal = analyze_news(headlines=headlines, product_name=product_name)
+
+        impact = str(signal.get("impact", "neutral")).lower()
+        if impact not in {"increase", "decrease", "neutral"}:
+            impact = "neutral"
+
+        matched_keywords = signal.get("keywords")
+        if not isinstance(matched_keywords, list):
+            matched_keywords = signal.get("matchedKeywords")
+        if not isinstance(matched_keywords, list):
+            matched_keywords = []
+
+        source_headlines = signal.get("sourceHeadlines")
+        if not isinstance(source_headlines, list):
+            source_headlines = headlines
+
+        keyword = signal.get("keyword")
+        if not keyword and matched_keywords:
+            keyword = matched_keywords[0]
+
+        score = signal.get("score", 0.0)
+        try:
+            score = float(score)
+        except Exception:
+            score = 0.0
+
+        print("Product:", product_name)
+        print("Headlines:", source_headlines)
+        print("Score:", score)
+        print("Impact:", impact)
+
+        return jsonify({
+            "productName": product_name,
+            "headlines": headlines,
+            "impact": impact,
+            "keyword": keyword,
+            "score": score,
+            "keywords": matched_keywords,
+            "matchedKeywords": matched_keywords,
+            "sourceHeadlines": source_headlines,
+            "source": source,
+        }), 200
+    except Exception as e:
+        print("news-insights error:", str(e))
+        fallback_headlines = [f"{product_name.lower()} market demand stable"] * 5
+        return jsonify({
+            "productName": product_name,
+            "headlines": fallback_headlines,
+            "impact": "neutral",
+            "keyword": "stable demand",
+            "score": 5.0,
+            "keywords": ["stable demand"],
+            "matchedKeywords": ["stable demand"],
+            "sourceHeadlines": fallback_headlines,
+            "source": "fallback",
+        }), 200
 
 
 # ------------------ DEBUG ROUTES PRINT ------------------

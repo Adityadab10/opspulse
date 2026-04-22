@@ -168,6 +168,7 @@ const buildExplainability = ({
   decision,
   impact,
   confidence,
+  newsSignal,
 }) => {
   const percentChange = toNumber(rulePrediction?.percentChange, 0);
   const trendDirection = percentChange > 0 ? "upward" : percentChange < 0 ? "downward" : "flat";
@@ -200,6 +201,16 @@ const buildExplainability = ({
         value: confidence,
         source: predictionSource === "ml" ? "ml-service" : "rule-engine",
       },
+      {
+        key: "newsScore",
+        value: toNumber(newsSignal?.score, 0),
+        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+      },
+      {
+        key: "newsKeyword",
+        value: newsSignal?.keyword || "none",
+        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+      },
     ],
   };
 };
@@ -228,6 +239,11 @@ const mapPredictionDocToResponse = (predictionDoc, fallbackProduct = null) => {
     ),
     decision: normalizeDecision(predictionDoc.decision),
     impact: normalizeImpact(predictionDoc.impact),
+    keyword: predictionDoc.keyword || null,
+    score: toNumber(predictionDoc.score, 0),
+    sourceHeadline: predictionDoc.sourceHeadline || null,
+    sourceHeadlines: Array.isArray(predictionDoc.sourceHeadlines) ? predictionDoc.sourceHeadlines : [],
+    matchedKeywords: Array.isArray(predictionDoc.matchedKeywords) ? predictionDoc.matchedKeywords : [],
     confidence: normalizeConfidence(predictionDoc.confidence, "Low"),
     reason: String(predictionDoc.reason || "No explanation available"),
     contributingFactors: Array.isArray(predictionDoc.contributingFactors)
@@ -286,6 +302,18 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction }) => {
   const decision = normalizeDecision(mlPrediction?.decision || fallbackDecision);
   const impact = normalizeImpact(mlPrediction?.impact);
   const confidence = normalizeConfidence(mlPrediction?.confidence, fallbackConfidence);
+  const newsSignal = {
+    keyword: typeof mlPrediction?.keyword === "string" ? mlPrediction.keyword : null,
+    score: toNumber(mlPrediction?.score, 0),
+    sourceHeadline:
+      typeof mlPrediction?.sourceHeadline === "string" ? mlPrediction.sourceHeadline : null,
+    sourceHeadlines: Array.isArray(mlPrediction?.sourceHeadlines)
+      ? mlPrediction.sourceHeadlines.filter((item) => typeof item === "string")
+      : [],
+    matchedKeywords: Array.isArray(mlPrediction?.matchedKeywords)
+      ? mlPrediction.matchedKeywords.filter((item) => typeof item === "string")
+      : [],
+  };
 
   const explainability = buildExplainability({
     predictionSource,
@@ -293,6 +321,7 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction }) => {
     decision,
     impact,
     confidence,
+    newsSignal,
   });
 
   return {
@@ -306,6 +335,11 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction }) => {
     adjustedPrediction: adjustedValue,
     decision,
     impact,
+    keyword: newsSignal.keyword,
+    score: newsSignal.score,
+    sourceHeadline: newsSignal.sourceHeadline,
+    sourceHeadlines: newsSignal.sourceHeadlines,
+    matchedKeywords: newsSignal.matchedKeywords,
     confidence,
     reason: explainability.reason,
     contributingFactors: explainability.contributingFactors,
@@ -327,6 +361,11 @@ const persistPrediction = async (productId, unifiedPrediction) => {
     adjustedPrediction: unifiedPrediction.adjustedPrediction,
     decision: unifiedPrediction.decision,
     impact: unifiedPrediction.impact,
+    keyword: unifiedPrediction.keyword,
+    score: unifiedPrediction.score,
+    sourceHeadline: unifiedPrediction.sourceHeadline,
+    sourceHeadlines: unifiedPrediction.sourceHeadlines,
+    matchedKeywords: unifiedPrediction.matchedKeywords,
     reason: unifiedPrediction.reason,
     contributingFactors: unifiedPrediction.contributingFactors,
     predictionSource: unifiedPrediction.predictionSource,

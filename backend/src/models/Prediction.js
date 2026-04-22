@@ -56,6 +56,26 @@ const predictionSchema = new mongoose.Schema(
       default: "neutral",
       required: true,
     },
+    keyword: {
+      type: String,
+      default: null,
+    },
+    score: {
+      type: Number,
+      default: 0,
+    },
+    sourceHeadline: {
+      type: String,
+      default: null,
+    },
+    sourceHeadlines: {
+      type: [String],
+      default: [],
+    },
+    matchedKeywords: {
+      type: [String],
+      default: [],
+    },
     reason: {
       type: String,
       required: true,

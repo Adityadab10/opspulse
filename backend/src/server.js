@@ -9,6 +9,7 @@ import dashboardRoutes from "./routes/dashboardRoutes.js";
 import alertRoutes from "./routes/alertRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import predictionRoutes from "./routes/predictionRoutes.js";
+import newsRoutes from "./routes/newsRoutes.js";
 import {
   predictAllProducts,
   predictByProduct,
@@ -36,6 +37,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/predictions", predictionRoutes);
+app.use("/api/news", newsRoutes);
 app.post("/api/predict-all", predictAllProducts);
 
 // Backward-compatible aliases for legacy clients still calling old endpoints.
