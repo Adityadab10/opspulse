@@ -177,6 +177,20 @@ const formatFactorValue = (value) => {
   return String(value);
 };
 
+const formatReasonSummary = (reason) => {
+  const text = String(reason || "").trim();
+  if (!text) {
+    return "No explanation available.";
+  }
+
+  const becauseIndex = text.toLowerCase().indexOf(" because ");
+  if (becauseIndex === -1) {
+    return text;
+  }
+
+  return text.slice(0, becauseIndex).trim();
+};
+
 export default function Dashboard() {
   const [summary, setSummary] = useState({
     totalProducts: 0,
@@ -763,7 +777,7 @@ export default function Dashboard() {
                     </div>
 
                     <p className="mt-3 text-sm text-slate-200">
-                      {item?.reason || "No explanation available."}
+                      {formatReasonSummary(item?.reason)}
                     </p>
                     {item?.sourceHeadline ? (
                       <p className="mt-2 text-xs text-slate-400">
@@ -865,7 +879,7 @@ export default function Dashboard() {
                         </div>
                       </td>
                       <td className="max-w-sm px-4 py-4 text-slate-200">
-                        <p className="line-clamp-3">{row?.reason || "No explanation available."}</p>
+                        <p className="line-clamp-3">{formatReasonSummary(row?.reason)}</p>
                       </td>
                       <td className="max-w-sm px-4 py-4">
                         <div className="flex flex-wrap gap-1.5">

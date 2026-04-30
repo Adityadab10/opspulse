@@ -4,10 +4,20 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List
+from html import unescape
 from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree as ET
 
-import requests
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except Exception:  # pragma: no cover - optional dependency at runtime
+    BeautifulSoup = None
+
+try:
+    import requests
+except Exception:  # pragma: no cover - optional dependency at runtime
+    requests = None
 
 GOOGLE_RSS_ENDPOINT = "https://news.google.com/rss/search?q={query}"
 BING_NEWS_ENDPOINT = "https://www.bing.com/news/search?q={query}"
@@ -45,15 +55,28 @@ def _fetch_google_rss(product_name: str) -> List[str]:
     query = quote_plus(f"{product_name} india")
     url = GOOGLE_RSS_ENDPOINT.format(query=query)
 
-    response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-    response.raise_for_status()
+    if requests is not None:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        payload = response.text
+    else:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            payload = response.read()
 
-    soup = BeautifulSoup(response.text, "xml")
     item_titles = []
-    for item in soup.find_all("item"):
-        title_node = item.find("title")
-        if title_node:
-            item_titles.append(title_node.get_text(" ", strip=True))
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(payload, "xml")
+        for item in soup.find_all("item"):
+            title_node = item.find("title")
+            if title_node:
+                item_titles.append(title_node.get_text(" ", strip=True))
+    else:
+        root = ET.fromstring(payload)
+        for item in root.findall(".//item"):
+            title_node = item.find("title")
+            if title_node is not None and title_node.text:
+                item_titles.append(title_node.text.strip())
 
     cleaned = [_clean_headline(title) for title in item_titles if title]
 
@@ -67,11 +90,30 @@ def _fetch_bing_news(product_name: str) -> List[str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-    response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS, headers=headers)
-    response.raise_for_status()
+    if requests is not None:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS, headers=headers)
+        response.raise_for_status()
+        payload = response.text
+    else:
+        request = Request(url, headers=headers)
+        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            payload = response.read()
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    cleaned = [_clean_headline(node.get_text(" ", strip=True)) for node in soup.select("a.title")]
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(payload, "html.parser")
+        cleaned = [_clean_headline(node.get_text(" ", strip=True)) for node in soup.select("a.title")]
+    else:
+        html_payload = payload.decode("utf-8", errors="ignore") if isinstance(payload, bytes) else str(payload)
+        matches = re.findall(
+            r"<a[^>]*class=[\"'][^\"']*title[^\"']*[\"'][^>]*>(.*?)</a>",
+            html_payload,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        cleaned = []
+        for raw in matches:
+            text = re.sub(r"<[^>]+>", " ", raw)
+            text = unescape(text)
+            cleaned.append(_clean_headline(text))
 
     return _dedupe_keep_order([item for item in cleaned if item])[:MAX_HEADLINES]
 

@@ -149,6 +149,57 @@ const normalizeConfidence = (value, fallback = "Low") => {
   return fallback;
 };
 
+const classifyMlFailure = (error) => {
+  const rawMessage = String(error?.message || "").trim();
+  const normalized = rawMessage.toLowerCase();
+  const statusMatch = normalized.match(/status\s+(\d{3})/);
+  const statusCode = statusMatch ? Number(statusMatch[1]) : null;
+
+  if (normalized.includes("abort")) {
+    return {
+      type: "timeout",
+      message: `the ML service timed out after ${ML_TIMEOUT_MS}ms`,
+    };
+  }
+
+  if (statusCode === 503) {
+    return {
+      type: "service-unavailable",
+      message: "the ML service is temporarily unavailable (503)",
+    };
+  }
+
+  if (statusCode === 400) {
+    return {
+      type: "invalid-input",
+      message: "the ML service rejected this prediction request (400)",
+    };
+  }
+
+  if (statusCode && statusCode >= 500) {
+    return {
+      type: "service-error",
+      message: `the ML service returned an internal error (${statusCode})`,
+    };
+  }
+
+  if (
+    normalized.includes("fetch failed") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("network")
+  ) {
+    return {
+      type: "unreachable",
+      message: "the ML service could not be reached on the network",
+    };
+  }
+
+  return {
+    type: "unknown",
+    message: rawMessage || "the ML prediction path was unavailable",
+  };
+};
+
 const buildProductRef = (product, fallbackProductId = null) => {
   const resolvedProductId =
     product && typeof product === "object"
@@ -169,49 +220,60 @@ const buildExplainability = ({
   impact,
   confidence,
   newsSignal,
+  mlFailure,
 }) => {
   const percentChange = toNumber(rulePrediction?.percentChange, 0);
   const trendDirection = percentChange > 0 ? "upward" : percentChange < 0 ? "downward" : "flat";
+  const reason = predictionSource === "ml"
+    ? `ML decision '${decision}' using forecast signal with ${impact} impact and ${trendDirection} sales trend.`
+    : `Rule-based decision '${decision}' from sales trend (${percentChange.toFixed(1)}%) because ${
+        mlFailure?.message || "the ML prediction path was unavailable"
+      }.`;
 
-  const reason =
-    predictionSource === "ml"
-      ? `ML decision '${decision}' using forecast signal with ${impact} impact and ${trendDirection} sales trend.`
-      : `Rule-based fallback decision '${decision}' because ML prediction was unavailable.`;
+  const factors = [
+    {
+      key: "salesPercentChange",
+      value: percentChange,
+      source: "rule-engine",
+    },
+    {
+      key: "seasonTag",
+      value: String(rulePrediction?.seasonTag || "Normal"),
+      source: "rule-engine",
+    },
+    {
+      key: "impact",
+      value: impact,
+      source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+    },
+    {
+      key: "confidence",
+      value: confidence,
+      source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+    },
+    {
+      key: "newsScore",
+      value: toNumber(newsSignal?.score, 0),
+      source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+    },
+    {
+      key: "newsKeyword",
+      value: newsSignal?.keyword || "none",
+      source: predictionSource === "ml" ? "ml-service" : "rule-engine",
+    },
+  ];
+
+  if (predictionSource !== "ml" && mlFailure?.type) {
+    factors.push({
+      key: "mlFallbackCause",
+      value: mlFailure.type,
+      source: "ml-service",
+    });
+  }
 
   return {
     reason,
-    contributingFactors: [
-      {
-        key: "salesPercentChange",
-        value: percentChange,
-        source: "rule-engine",
-      },
-      {
-        key: "seasonTag",
-        value: String(rulePrediction?.seasonTag || "Normal"),
-        source: "rule-engine",
-      },
-      {
-        key: "impact",
-        value: impact,
-        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
-      },
-      {
-        key: "confidence",
-        value: confidence,
-        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
-      },
-      {
-        key: "newsScore",
-        value: toNumber(newsSignal?.score, 0),
-        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
-      },
-      {
-        key: "newsKeyword",
-        value: newsSignal?.keyword || "none",
-        source: predictionSource === "ml" ? "ml-service" : "rule-engine",
-      },
-    ],
+    contributingFactors: factors,
   };
 };
 
@@ -277,7 +339,22 @@ const callMlPrediction = async (productId) => {
     });
 
     if (!response.ok) {
-      throw new Error(`ML service responded with status ${response.status}`);
+      let details = "";
+      try {
+        const maybeJson = await response.json();
+        if (maybeJson && typeof maybeJson === "object") {
+          details = String(maybeJson.error || maybeJson.message || "").trim();
+        }
+      } catch {
+        try {
+          details = String(await response.text()).trim();
+        } catch {
+          details = "";
+        }
+      }
+
+      const suffix = details ? `: ${details}` : "";
+      throw new Error(`ML service responded with status ${response.status}${suffix}`);
     }
 
     const payload = await response.json();
@@ -287,7 +364,7 @@ const callMlPrediction = async (productId) => {
   }
 };
 
-const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction }) => {
+const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction, mlFailure = null }) => {
   const ruleValue = toNumber(rulePrediction?.predictedDemand, 0);
   const fallbackDecision = deriveRuleDecision(rulePrediction?.percentChange);
   const fallbackConfidence = normalizeConfidence(rulePrediction?.confidence, "Low");
@@ -322,6 +399,7 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction }) => {
     impact,
     confidence,
     newsSignal,
+    mlFailure,
   });
 
   return {
@@ -420,12 +498,15 @@ const getPredictionForProduct = async ({
   const rulePrediction = await generatePredictionForProduct(productId);
 
   let mlPrediction = null;
+  let mlFailure = null;
   try {
     mlPrediction = await callMlPrediction(productId);
   } catch (mlError) {
+    mlFailure = classifyMlFailure(mlError);
     logEvent("warn", "ML prediction failed, using rule-based fallback", {
       productId,
       error: mlError?.message || "unknown error",
+      fallbackCause: mlFailure.type,
     });
   }
 
@@ -433,6 +514,7 @@ const getPredictionForProduct = async ({
     product,
     rulePrediction,
     mlPrediction,
+    mlFailure,
   });
 
   const savedPrediction = await persistPrediction(productId, unified);

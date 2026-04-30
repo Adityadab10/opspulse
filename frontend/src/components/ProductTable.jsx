@@ -66,6 +66,20 @@ const formatFactorValue = (value) => {
   return String(value);
 };
 
+const formatReasonSummary = (reason) => {
+  const text = String(reason || "").trim();
+  if (!text) {
+    return "No explanation available.";
+  }
+
+  const becauseIndex = text.toLowerCase().indexOf(" because ");
+  if (becauseIndex === -1) {
+    return text;
+  }
+
+  return text.slice(0, becauseIndex).trim();
+};
+
 export default function ProductTable({
   rows,
   onRunPrediction,
@@ -215,7 +229,7 @@ export default function ProductTable({
                             <div>
                               <p className="text-xs uppercase tracking-wide text-slate-400">Reason</p>
                               <p className="mt-1 text-sm text-slate-200">
-                                {prediction?.reason || "No explanation available."}
+                                {formatReasonSummary(prediction?.reason)}
                               </p>
                             </div>
 

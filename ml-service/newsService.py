@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import re
 from typing import Iterable, List
 
@@ -19,7 +18,14 @@ SCORE_MAP = {
     "medium_decrease": -15,
 }
 
-FALLBACK_KEYWORDS = ["stable demand", "market sentiment", "seasonal trend"]
+FALLBACK_SIGNALS = [
+    {"keyword": "festival demand", "score": 14},
+    {"keyword": "restocking cycle", "score": 8},
+    {"keyword": "seasonal trend", "score": 4},
+    {"keyword": "price sensitivity", "score": -6},
+    {"keyword": "inventory correction", "score": -14},
+    {"keyword": "supply pressure", "score": 12},
+]
 
 
 def _clean_text(text: str) -> str:
@@ -39,6 +45,23 @@ def _to_headline_list(text: str = "", headlines: Iterable[str] | None = None) ->
         prepared = []
 
     return prepared
+
+
+def _stable_hash(value: str) -> int:
+    total = 0
+    for index, char in enumerate(value):
+        total += (index + 1) * ord(char)
+    return total
+
+
+def _resolve_fallback_signal(product_name: str, headlines: List[str]) -> dict:
+    seed_input = f"{(product_name or '').strip().lower()}|{' '.join(headlines).lower()}"
+    seed = _stable_hash(seed_input)
+    selected = FALLBACK_SIGNALS[seed % len(FALLBACK_SIGNALS)]
+    return {
+        "keyword": selected["keyword"],
+        "score": selected["score"],
+    }
 
 
 def _score_headline(cleaned_headline: str):
@@ -72,10 +95,12 @@ def analyze_news(text: str = "", headlines: Iterable[str] | None = None, product
     """Analyze all headlines with weighted keyword matching and guaranteed output."""
     source_headlines = _to_headline_list(text=text, headlines=headlines)
     if not source_headlines:
-        fallback_keyword = random.choice(FALLBACK_KEYWORDS)
+        fallback = _resolve_fallback_signal(product_name=product_name, headlines=[])
+        fallback_score = int(fallback["score"])
+        fallback_keyword = str(fallback["keyword"])
         return {
-            "impact": "neutral",
-            "score": 5,
+            "impact": "increase" if fallback_score > 10 else "decrease" if fallback_score < -10 else "neutral",
+            "score": fallback_score,
             "keywords": [fallback_keyword],
             "headlines": [],
             "matchedKeywords": [fallback_keyword],
@@ -103,9 +128,10 @@ def analyze_news(text: str = "", headlines: Iterable[str] | None = None, product
             deduped_keywords.append(keyword)
 
     if not deduped_keywords:
-        fallback_keyword = random.choice(FALLBACK_KEYWORDS)
+        fallback = _resolve_fallback_signal(product_name=product_name, headlines=source_headlines)
+        fallback_keyword = str(fallback["keyword"])
         deduped_keywords = [fallback_keyword]
-        total_score = 5
+        total_score = int(fallback["score"])
 
     if total_score > 10:
         impact = "increase"

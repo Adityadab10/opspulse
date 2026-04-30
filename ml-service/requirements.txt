@@ -1,0 +1,12 @@
+flask
+flask-cors
+python-dotenv
+pymongo
+pandas
+prophet
+joblib
+scikit-learn
+requests
+beautifulsoup4
+lxml
+statsmodels
