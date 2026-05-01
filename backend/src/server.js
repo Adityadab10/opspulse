@@ -13,6 +13,7 @@ import newsRoutes from "./routes/newsRoutes.js";
 import {
   predictAllProducts,
   predictByProduct,
+  comparePredictions,
 } from "./controllers/predictionController.js";
 
 
@@ -39,6 +40,7 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/predictions", predictionRoutes);
 app.use("/api/news", newsRoutes);
 app.post("/api/predict-all", predictAllProducts);
+app.get("/api/compare-predictions", comparePredictions);
 
 // Backward-compatible aliases for legacy clients still calling old endpoints.
 app.post("/api/predict/:productId", predictByProduct);

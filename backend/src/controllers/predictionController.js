@@ -4,7 +4,9 @@ import Prediction from "../models/Prediction.js";
 import { generatePredictionForProduct } from "../services/predictionService.js";
 
 const ML_PREDICT_URL = process.env.ML_PREDICT_URL || "http://localhost:5002/predict";
+const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models";
 const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 10000);
+const ML_COMPARE_TIMEOUT_MS = Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000);
 const PREDICTION_CACHE_TTL_MS = Number(process.env.PREDICTION_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const predictionCache = new Map();
@@ -56,6 +58,16 @@ const sendError = (res, statusCode, message, details = null) => {
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toArray = (value) => {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return [];
+  }
+  return [value];
 };
 
 const isTruthy = (value) => {
@@ -362,6 +374,69 @@ const callMlPrediction = async (productId) => {
   } finally {
     clearTimeout(timeoutId);
   }
+};
+
+const callMlComparison = async (productId) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ML_COMPARE_TIMEOUT_MS);
+
+  try {
+    if (typeof fetch !== "function") {
+      throw new Error("Global fetch is not available in this Node runtime");
+    }
+
+    const response = await fetch(ML_COMPARE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId: String(productId) }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      let details = "";
+      try {
+        const maybeJson = await response.json();
+        if (maybeJson && typeof maybeJson === "object") {
+          details = String(maybeJson.error || maybeJson.message || "").trim();
+        }
+      } catch {
+        try {
+          details = String(await response.text()).trim();
+        } catch {
+          details = "";
+        }
+      }
+
+      const suffix = details ? `: ${details}` : "";
+      throw new Error(`ML service responded with status ${response.status}${suffix}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const normalizeComparisonPayload = (payload, product) => {
+  const prophetPrediction = payload?.prophetPrediction ?? payload?.prophet_prediction;
+  const arimaPrediction = payload?.arimaPrediction ?? payload?.arima_prediction;
+  const actualValues = payload?.actualValues ?? payload?.actual_values;
+
+  return {
+    productId: String(product?._id || payload?.productId || ""),
+    productName: product?.name || payload?.productName || "Unknown Product",
+    category: product?.category || payload?.category || "Uncategorized",
+    prophetPrediction: toArray(prophetPrediction),
+    arimaPrediction: toArray(arimaPrediction),
+    actualValues: toArray(actualValues),
+    prophetRMSE: toNumber(payload?.prophetRMSE ?? payload?.prophet_rmse, 0),
+    arimaRMSE: toNumber(payload?.arimaRMSE ?? payload?.arima_rmse, 0),
+    prophetMAE: toNumber(payload?.prophetMAE ?? payload?.prophet_mae, 0),
+    arimaMAE: toNumber(payload?.arimaMAE ?? payload?.arima_mae, 0),
+    prophetMAPE: toNumber(payload?.prophetMAPE ?? payload?.prophet_mape, 0),
+    arimaMAPE: toNumber(payload?.arimaMAPE ?? payload?.arima_mape, 0),
+    betterModel: String(payload?.betterModel || payload?.better_model || "tie"),
+  };
 };
 
 const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction, mlFailure = null }) => {
@@ -712,5 +787,56 @@ export const getUnifiedPredictions = async (req, res) => {
     });
 
     return sendError(res, 500, "Failed to fetch unified predictions", error.message);
+  }
+};
+
+export const comparePredictions = async (req, res) => {
+  try {
+    const products = await Product.find({}, "_id name category").lean();
+
+    if (!products.length) {
+      return res.status(200).json([]);
+    }
+
+    const settled = await Promise.allSettled(
+      products.map(async (product) => {
+        const comparison = await callMlComparison(product._id);
+        return normalizeComparisonPayload(comparison, product);
+      })
+    );
+
+    const comparisons = settled
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+
+    const failed = settled
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason?.message || "Unknown error");
+
+    if (failed.length) {
+      logEvent("warn", "Some model comparisons failed", {
+        failed: failed.length,
+        errors: failed.slice(0, 5),
+      });
+    }
+
+    if (comparisons.length === 0 && failed.length) {
+      return res.status(502).json({
+        message: "All model comparisons failed",
+        error: failed[0],
+        errors: failed.slice(0, 5),
+      });
+    }
+
+    return res.status(200).json(comparisons);
+  } catch (error) {
+    logEvent("error", "Failed to compare predictions", {
+      error: error?.message || "Unknown error",
+    });
+
+    return res.status(500).json({
+      message: "Failed to compare predictions",
+      error: error.message,
+    });
   }
 };

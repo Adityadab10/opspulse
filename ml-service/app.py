@@ -27,6 +27,13 @@ except Exception as e:
     predict_demand = None
 
 try:
+    from arimaService import compare_arima_prophet
+    print("✅ arimaService imported successfully")
+except Exception as e:
+    print("❌ Error importing arimaService:", str(e))
+    compare_arima_prophet = None
+
+try:
     from mongoService import get_db_diagnostics, get_raw_sales_data
     print("✅ mongoService imported successfully")
 except Exception as e:
@@ -131,6 +138,57 @@ def predict():
     except Exception as e:
         print("Exception:", str(e))
         return jsonify({"error": "Prediction failed"}), 500
+
+
+@app.route("/compare-models", methods=["POST"])
+def compare_models():
+    print("\n--- /compare-models endpoint was called ---")
+
+    if compare_arima_prophet is None:
+        return jsonify({"error": "Comparison service not available"}), 503
+
+    data = request.get_json()
+    print("Request data:", data)
+
+    if not data or "productId" not in data:
+        return jsonify({"error": "productId is required"}), 400
+
+    product_id = data["productId"]
+
+    try:
+        comparison = compare_arima_prophet(product_id)
+
+        prophet_prediction = comparison.get("prophet_prediction", [])
+        arima_prediction = comparison.get("arima_prediction", [])
+        actual_values = comparison.get("actual_values", [])
+        prophet_metrics = comparison.get("prophet_metrics", {})
+        arima_metrics = comparison.get("arima_metrics", {})
+
+        response_payload = {
+            "productId": product_id,
+            "prophetPrediction": prophet_prediction,
+            "arimaPrediction": arima_prediction,
+            "actualValues": actual_values,
+            "prophetRMSE": prophet_metrics.get("rmse", 0.0),
+            "arimaRMSE": arima_metrics.get("rmse", 0.0),
+            "prophetMAE": prophet_metrics.get("mae", 0.0),
+            "arimaMAE": arima_metrics.get("mae", 0.0),
+            "prophetMAPE": prophet_metrics.get("mape", 0.0),
+            "arimaMAPE": arima_metrics.get("mape", 0.0),
+            "betterModel": comparison.get("better_model", "tie"),
+        }
+
+        print("Comparison result:", response_payload)
+
+        return jsonify(response_payload), 200
+
+    except ValueError as e:
+        print("ValueError:", str(e))
+        return jsonify({"error": str(e)}), 400
+
+    except Exception as e:
+        print("Exception:", str(e))
+        return jsonify({"error": "Comparison failed"}), 500
 
 
 @app.route("/api/predict/<product_id>", methods=["POST", "GET"])

@@ -22,6 +22,10 @@ export const predictionApi = {
   runAllPredictions: (params = {}) => api.post("/predict-all", {}, { params }),
 };
 
+export const comparisonApi = {
+  getComparisons: () => api.get("/compare-predictions", { timeout: 60000 }),
+};
+
 export const newsApi = {
   getProductNews: (productId) => api.get(`/news/${encodeURIComponent(productId)}`),
 };

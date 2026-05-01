@@ -16,7 +16,9 @@ import DonutChart from "../components/DonutChart";
 import ProductTable from "../components/ProductTable";
 import NewsPanel from "../components/NewsPanel";
 import AlertList from "../components/AlertList";
-import { alertsApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
+import ComparisonModal from "../components/ComparisonModal";
+import ForecastComparisonChart from "../components/ForecastComparisonChart";
+import { alertsApi, comparisonApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
 
 const mergeAnalysisWithProducts = (analysisRows, products) => {
   const bucket = new Map();
@@ -49,6 +51,16 @@ const mergeAnalysisWithProducts = (analysisRows, products) => {
 const toNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toArray = (value) => {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return [];
+  }
+  return [value];
 };
 
 const normalizePredictionPayload = (payload, fallbackProductId) => {
@@ -107,6 +119,52 @@ const extractPredictionRows = (rawResponseData) => {
       row?.productId?._id || row?.productId || null
     )
   );
+};
+
+const normalizeComparisonRow = (row) => {
+  const prophetPrediction = row?.prophetPrediction ?? row?.prophet_prediction;
+  const arimaPrediction = row?.arimaPrediction ?? row?.arima_prediction;
+  const actualValues = row?.actualValues ?? row?.actual_values;
+
+  return {
+    productId:
+      row?.productId?._id || row?.productId || row?._id || row?.id || null,
+    productName: row?.productName || row?.productId?.name || row?.name || "Unknown Product",
+    category: row?.category || row?.productId?.category || "Uncategorized",
+    prophetPrediction: toArray(prophetPrediction),
+    arimaPrediction: toArray(arimaPrediction),
+    actualValues: toArray(actualValues),
+    prophetRMSE: toNumber(row?.prophetRMSE ?? row?.prophet_rmse, 0),
+    arimaRMSE: toNumber(row?.arimaRMSE ?? row?.arima_rmse, 0),
+    prophetMAE: toNumber(row?.prophetMAE ?? row?.prophet_mae, 0),
+    arimaMAE: toNumber(row?.arimaMAE ?? row?.arima_mae, 0),
+    prophetMAPE: toNumber(row?.prophetMAPE ?? row?.prophet_mape, 0),
+    arimaMAPE: toNumber(row?.arimaMAPE ?? row?.arima_mape, 0),
+    betterModel: row?.betterModel || row?.better_model || "tie",
+  };
+};
+
+const sumPrediction = (values) =>
+  Array.isArray(values)
+    ? values.reduce((sum, value) => sum + toNumber(value, 0), 0)
+    : toNumber(values, 0);
+
+const getBetterModelBadgeClass = (value) => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "prophet") {
+    return "bg-blue-500/20 text-blue-200 border border-blue-500/30";
+  }
+  if (normalized === "arima") {
+    return "bg-purple-500/20 text-purple-200 border border-purple-500/30";
+  }
+  return "bg-slate-500/20 text-slate-200 border border-slate-500/30";
+};
+
+const formatModelLabel = (value) => {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "prophet") return "Prophet";
+  if (normalized === "arima") return "ARIMA";
+  return "Tie";
 };
 
 const getDecisionBadgeClass = (decision) => {
@@ -201,6 +259,11 @@ export default function Dashboard() {
   const [analysis, setAnalysis] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [predictions, setPredictions] = useState([]);
+  const [comparisonData, setComparisonData] = useState([]);
+  const [comparisonLoading, setComparisonLoading] = useState(true);
+  const [comparisonError, setComparisonError] = useState("");
+  const [comparisonModalOpen, setComparisonModalOpen] = useState(false);
+  const [selectedComparison, setSelectedComparison] = useState(null);
   const [loading, setLoading] = useState(true);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
@@ -289,15 +352,48 @@ export default function Dashboard() {
     }
   }, []);
 
+  const loadComparisons = useCallback(async () => {
+    try {
+      setComparisonLoading(true);
+      setComparisonError("");
+
+      const response = await comparisonApi.getComparisons();
+      const rows = Array.isArray(response?.data) ? response.data : [];
+      setComparisonData(rows.map(normalizeComparisonRow));
+    } catch (err) {
+      console.error("Comparison fetch error:", err);
+
+      const message =
+        err?.response?.data?.error?.message ||
+        err?.response?.data?.message ||
+        err?.message ||
+        "Failed to load forecast comparisons.";
+      setComparisonError(message);
+      setComparisonData([]);
+    } finally {
+      setComparisonLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const bootstrap = async () => {
       setLoading(true);
-      await Promise.all([loadDashboard(), loadPredictions({ forceRefresh: true })]);
+      await Promise.all([
+        loadDashboard(),
+        loadPredictions({ forceRefresh: true }),
+        loadComparisons(),
+      ]);
       setLoading(false);
     };
 
     bootstrap();
-  }, [loadDashboard, loadPredictions]);
+  }, [loadDashboard, loadPredictions, loadComparisons]);
+
+  useEffect(() => {
+    if (!comparisonModalOpen) {
+      setSelectedComparison(null);
+    }
+  }, [comparisonModalOpen]);
 
   const runPrediction = async (productId) => {
     if (!productId) {
@@ -530,6 +626,13 @@ export default function Dashboard() {
   }, [predictions]);
 
   const hasPredictions = predictions.length > 0;
+  const comparisonChartData = useMemo(() => {
+    return comparisonData.slice(0, 8).map((row) => ({
+      name: row.productName || "Product",
+      Prophet: Number(sumPrediction(row.prophetPrediction).toFixed(0)),
+      ARIMA: Number(sumPrediction(row.arimaPrediction).toFixed(0)),
+    }));
+  }, [comparisonData]);
 
   if (loading) {
     return (
@@ -795,6 +898,140 @@ export default function Dashboard() {
           )}
         </section>
 
+        <section className="glass rounded-2xl p-6 transition-all hover:border-blue-500/40">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="bg-gradient-to-r from-white to-blue-200 bg-clip-text text-xl font-bold text-transparent">
+                Forecast Model Comparison
+              </h3>
+              <p className="mt-1 text-sm text-slate-400">
+                Compare Prophet and ARIMA forecasts for every product and view accuracy metrics.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadComparisons}
+              disabled={comparisonLoading}
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-400/40 bg-blue-500/20 px-4 py-2 text-sm font-semibold text-blue-100 transition hover:bg-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${comparisonLoading ? "animate-spin" : ""}`} />
+              Refresh Comparison
+            </button>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <ForecastComparisonChart data={comparisonChartData} />
+            </div>
+            <div className="glass rounded-2xl p-6">
+              <h4 className="text-sm font-semibold text-slate-200">Quick Accuracy Snapshot</h4>
+              <p className="mt-2 text-sm text-slate-400">
+                Lower RMSE/MAE indicates a closer fit to recent sales data. Use the
+                comparison table to review the best model per product.
+              </p>
+              <div className="mt-4 space-y-2 text-xs text-slate-300">
+                <div className="flex items-center justify-between">
+                  <span>Products compared</span>
+                  <span className="font-semibold text-white">{comparisonData.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Prophet wins</span>
+                  <span className="font-semibold text-white">
+                    {comparisonData.filter((row) => String(row.betterModel).toLowerCase() === "prophet").length}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>ARIMA wins</span>
+                  <span className="font-semibold text-white">
+                    {comparisonData.filter((row) => String(row.betterModel).toLowerCase() === "arima").length}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {comparisonLoading ? (
+            <div className="mt-6 flex items-center justify-center rounded-xl border border-slate-500/30 bg-slate-900/60 px-4 py-6 text-sm text-slate-300">
+              Loading comparison data...
+            </div>
+          ) : comparisonError ? (
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              <span>{comparisonError}</span>
+              <button
+                type="button"
+                onClick={loadComparisons}
+                className="inline-flex items-center gap-1 rounded-lg border border-red-300/40 bg-red-300/10 px-3 py-1.5 text-xs font-semibold text-red-100 transition hover:bg-red-300/20"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Retry
+              </button>
+            </div>
+          ) : comparisonData.length > 0 ? (
+            <div className="mt-6 overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b border-blue-500/20">
+                  <tr>
+                    <th className="px-4 py-4 font-semibold text-slate-300">Product Name</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">Prophet Prediction</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">ARIMA Prediction</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">Prophet RMSE</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">ARIMA RMSE</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">Better Model</th>
+                    <th className="px-4 py-4 font-semibold text-slate-300">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonData.map((row, index) => (
+                    <tr
+                      key={`${row.productId || row.productName}-${index}`}
+                      className="border-b border-blue-500/10 transition-colors hover:bg-blue-500/5"
+                    >
+                      <td className="px-4 py-4 font-medium text-white">{row.productName}</td>
+                      <td className="px-4 py-4 text-slate-300">
+                        {sumPrediction(row.prophetPrediction).toFixed(0)}
+                      </td>
+                      <td className="px-4 py-4 text-slate-300">
+                        {sumPrediction(row.arimaPrediction).toFixed(0)}
+                      </td>
+                      <td className="px-4 py-4 text-slate-300">
+                        {toNumber(row.prophetRMSE, 0).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-4 text-slate-300">
+                        {toNumber(row.arimaRMSE, 0).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-4">
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold ${getBetterModelBadgeClass(
+                            row.betterModel
+                          )}`}
+                        >
+                          {formatModelLabel(row.betterModel)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedComparison(row);
+                            setComparisonModalOpen(true);
+                          }}
+                          className="inline-flex items-center gap-2 rounded-lg border border-blue-400/40 bg-blue-500/10 px-3 py-2 text-xs font-semibold text-blue-100 transition hover:bg-blue-500/20"
+                        >
+                          View Comparison
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-6 rounded-xl border border-slate-500/30 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-300">
+              No comparison data available yet.
+            </div>
+          )}
+        </section>
+
         <section className="glass rounded-2xl p-6 transition-all hover:border-purple-500/40">
           <h3 className="mb-6 bg-gradient-to-r from-white to-purple-200 bg-clip-text text-xl font-bold text-transparent">
             Prediction Decisions
@@ -933,6 +1170,11 @@ export default function Dashboard() {
           data={newsPanelData || { product: newsPanelProduct }}
           onClose={() => setNewsPanelOpen(false)}
           onRetry={retryNewsPanel}
+        />
+        <ComparisonModal
+          isOpen={comparisonModalOpen}
+          onClose={() => setComparisonModalOpen(false)}
+          row={selectedComparison}
         />
       </main>
     </div>

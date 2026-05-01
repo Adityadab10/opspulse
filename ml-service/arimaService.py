@@ -67,7 +67,8 @@ def _compute_metrics(actual_values: List[float], predictions: List[float]) -> Di
     y_true = np.array(actual_values, dtype=float)
     y_pred = np.array(predictions, dtype=float)
 
-    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = float(np.sqrt(mse))
     mae = mean_absolute_error(y_true, y_pred)
     mape = _mean_absolute_percentage_error(y_true, y_pred)
 
