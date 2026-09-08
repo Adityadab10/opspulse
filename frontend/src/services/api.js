@@ -34,6 +34,10 @@ export const alertsApi = {
   getAlerts: () => api.get("/alerts"),
 };
 
+export const productIntelligenceApi = {
+  getProductIntelligence: (productId) => api.get(`/products/${productId}/intelligence`),
+};
+
 export const uploadApi = {
   uploadCsv: (file) => {
     const formData = new FormData();

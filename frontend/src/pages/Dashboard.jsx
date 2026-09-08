@@ -282,6 +282,8 @@ export default function Dashboard() {
   const [newsPanelData, setNewsPanelData] = useState(null);
   const [newsPanelProduct, setNewsPanelProduct] = useState(null);
   const [selectedNewsProductId, setSelectedNewsProductId] = useState("");
+  const [productIntelligence, setProductIntelligence] = useState(null);
+  const [selectedProductId, setSelectedProductId] = useState("");
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -320,6 +322,19 @@ export default function Dashboard() {
       setDashboardError(message);
     } finally {
       setSummaryLoading(false);
+    }
+  }, []);
+
+  const loadProductIntelligence = useCallback(async (productId) => {
+    try {
+      setProductIntelligence(null);
+      setSelectedProductId(productId);
+
+      const res = await productIntelligenceApi.getProductIntelligence(productId);
+      setProductIntelligence(res.data || null);
+    } catch (err) {
+      console.error("Product intelligence fetch error:", err);
+      setProductIntelligence(null);
     }
   }, []);
 
@@ -766,6 +781,83 @@ export default function Dashboard() {
               ))}
           </select>
         </section>
+
+        {selectedProductId && productIntelligence ? (
+          <section className="glass rounded-2xl p-6 transition-all hover:border-purple-500/40">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="bg-gradient-to-r from-white to-purple-200 bg-clip-text text-xl font-bold text-transparent">
+                  Product Intelligence
+                </h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  {productIntelligence.product?.name} · {productIntelligence.product?.category}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProductIntelligence(null);
+                  setSelectedProductId("");
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-500/40 bg-slate-500/10 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-slate-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Summary</p>
+                <ul className="space-y-2 text-sm text-slate-200">
+                  <li>Avg Monthly Sales: {productIntelligence.summary?.avgSales != null ? productIntelligence.summary.avgSales : "N/A"}</li>
+                  <li>Recent Sales: {productIntelligence.summary?.recentSales ?? "N/A"}</li>
+                  <li>Previous Sales: {productIntelligence.summary?.previousSales ?? "N/A"}</li>
+                  <li>Percent Change: {productIntelligence.summary?.percentChange != null ? productIntelligence.summary.percentChange.toFixed(1) + "%" : "N/A"}</li>
+                  <li>Trend: {productIntelligence.summary?.trendDirection ?? "N/A"}</li>
+                </ul>
+              </div>
+
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Forecast</p>
+                <ul className="space-y-2 text-sm text-slate-200">
+                  <li>Predicted Demand: {productIntelligence.forecast?.predictedDemand ?? "N/A"}</li>
+                  <li>Rule Prediction: {productIntelligence.forecast?.rulePrediction ?? "N/A"}</li>
+                  <li>ML Prediction: {productIntelligence.forecast?.mlPrediction ?? "N/A"}</li>
+                  <li>Adjusted Prediction: {productIntelligence.forecast?.adjustedPrediction ?? "N/A"}</li>
+                  <li>Confidence: {productIntelligence.forecast?.confidence ?? "N/A"}</li>
+                  <li>Source: {productIntelligence.forecast?.predictionSource ?? "N/A"}</li>
+                </ul>
+              </div>
+
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-400">Why this prediction?</p>
+                <ul className="space-y-2 text-xs text-slate-200">
+                  <li>Historical demand: {productIntelligence.forecast?.reason?.match(/Historical demand: (.+?)\./)?.[1] ?? "Demand trend analyzed"}</li>
+                  <li>Forecast: {productIntelligence.forecast?.predictedDemand != null ? `${productIntelligence.forecast.predictedDemand}` : "units predicted"}</li>
+                  <li>Trend: {productIntelligence.summary?.trendDirection ?? "stable"}</li>
+                  <li>Seasonality: {productIntelligence.forecast?.seasonTag ?? "Normal"}</li>
+                  <li>External signal: {productIntelligence.forecast?.keyword ?? "none"}</li>
+                  <li>Confidence: {productIntelligence.forecast?.confidence ?? "Low"}</li>
+                  <li>Final decision: {productIntelligence.forecast?.decision ?? "maintain"}</li>
+                </ul>
+              </div>
+            </div>
+            {productIntelligence.alerts && productIntelligence.alerts.length > 0 && (
+              <div className="mt-4 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+                <p className="text-xs uppercase tracking-wide text-purple-200">Active Alerts</p>
+                <ul className="space-y-1 text-xs text-purple-100">
+                  {productIntelligence.alerts.map((alert, idx) => (
+                    <li key={idx}>
+                      <span className="font-semibold">
+                        {alert.type}: {alert.message}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        ) : null}
 
         {/* Charts Section */}
         <section className="grid gap-6 lg:grid-cols-3">

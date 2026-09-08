@@ -17,26 +17,146 @@ const getLastSixMonthWindow = () => {
   return { startDate, monthKeys };
 };
 
+const computeTrend = (salesDocs, recentDays = 30) => {
+  if (!salesDocs || salesDocs.length === 0) {
+    return { recentSales: 0, previousSales: 0, percentChange: 0, trendDirection: "stable" };
+  }
+
+  // Get recent period sales (last recentDays days)
+  const now = new Date();
+  const cutoffDate = new Date(now);
+  cutoffDate.setDate(cutoffDate.getDate() - recentDays);
+
+  const recentSales = salesDocs
+    .filter((s) => new Date(s.date) <= now && new Date(s.date) > cutoffDate)
+    .reduce((sum, s) => sum + (s.quantity || 0), 0);
+
+  // Previous period: same length before recent period
+  const prevEndDate = new Date(cutoffDate);
+  const prevStartDate = new Date(cutoffDate);
+  prevStartDate.setDate(prevStartDate.getDate() - recentDays);
+
+  const previousSales = salesDocs
+    .filter((s) => new Date(s.date) <= prevEndDate && new Date(s.date) > prevStartDate)
+    .reduce((sum, s) => sum + (s.quantity || 0), 0);
+
+  let percentChange = 0;
+  let trendDirection = "stable";
+
+  if (previousSales > 0) {
+    percentChange = calculatePercentChange(recentSales, previousSales);
+    trendDirection = percentChange > 0 ? "increasing" : percentChange < 0 ? "decreasing" : "stable";
+  } else if (recentSales > 0 && previousSales === 0) {
+    percentChange = 100;
+    trendDirection = "increasing";
+  } else {
+    percentChange = 0;
+    trendDirection = "stable";
+  }
+
+  return { recentSales, previousSales, percentChange, trendDirection };
+};
+
 export const getSummary = async (req, res) => {
   try {
-    const [totalProducts, activeAlerts, avgAgg] = await Promise.all([
+    const [totalProducts, activeAlerts, salesDocs] = await Promise.all([
       Product.countDocuments(),
       Alert.countDocuments(),
-      Sales.aggregate([
-        {
-          $group: {
-            _id: null,
-            avgMonthlySales: { $avg: "$quantity" },
-          },
-        },
-      ]),
+      Sales.find({}).sort({ date: 1 }).lean(),
     ]);
+
+    const totalSalesVolume = salesDocs.reduce((sum, s) => sum + (s.quantity || 0), 0);
+    const avgDailySales = totalSalesVolume / 30 || 0;
+    const avgMonthlySales = totalSalesVolume / 30 || 0;
+
+    const trend = computeTrend(salesDocs);
+
+    // Group sales by product for top products calculation
+    const productSalesMap = new Map();
+    for (const sale of salesDocs) {
+      const key = sale.productId;
+      if (!productSalesMap.has(key)) {
+        productSalesMap.set(key, { productId: key, totalQty: 0, sales: [] });
+      }
+      productSalesMap.get(key).totalQty += sale.quantity || 0;
+      productSalesMap.get(key).sales.push(sale);
+    }
+
+    // Compute trend for each product and sort
+    const productTrends = [];
+    for (const [, data] of productSalesMap) {
+      const t = computeTrend(data.sales);
+      productTrends.push({
+        productId: data.productId,
+        totalQty: data.totalQty,
+        recentSales: t.recentSales,
+        previousSales: t.previousSales,
+        percentChange: t.percentChange,
+        trendDirection: t.trendDirection,
+      });
+    }
+
+    // Sort by percentChange descending for "increasing" and ascending for "decreasing"
+    const topIncreasing = productTrends
+      .filter((p) => p.trendDirection === "increasing")
+      .sort((a, b) => b.percentChange - a.percentChange)
+      .slice(0, 3);
+
+    const topDecreasing = productTrends
+      .filter((p) => p.trendDirection === "decreasing")
+      .sort((a, b) => a.percentChange - b.percentChange)
+      .slice(0, 3);
+
+    // Fallback: if not enough products with increasing/decreasing trend,
+    // use top 3 by total sales volume
+    if (topIncreasing.length < 3) {
+      const allSorted = productTrends
+        .sort((a, b) => b.totalQty - a.totalQty)
+        .slice(0, 3 - topIncreasing.length);
+      topIncreasing.push(...allSorted.filter((p) => p.trendDirection !== "decreasing"));
+    }
+    if (topDecreasing.length < 3) {
+      const allSorted = productTrends
+        .sort((a, b) => b.totalQty - a.totalQty)
+        .slice(0, 3 - topDecreasing.length);
+      topDecreasing.push(...allSorted.filter((p) => p.trendDirection !== "increasing"));
+    }
+
+    const topIncreasingProducts = topIncreasing.map((r) => {
+      const product = await Product.findById(r.productId).lean();
+      return {
+        name: product ? product.name : "Unknown Product",
+        quantity: r.totalQty,
+        percentChange: r.percentChange,
+        trendDirection: r.trendDirection,
+      };
+    });
+
+    const topDecreasingProducts = topDecreasing.map((r) => {
+      const product = await Product.findById(r.productId).lean();
+      return {
+        name: product ? product.name : "Unknown Product",
+        quantity: r.totalQty,
+        percentChange: r.percentChange,
+        trendDirection: r.trendDirection,
+      };
+    });
 
     return res.status(200).json({
       totalProducts,
-      avgMonthlySales: avgAgg.length ? roundTo(avgAgg[0].avgMonthlySales) : 0,
+      avgMonthlySales: totalProducts ? roundTo(totalSalesVolume / Math.max(totalProducts, 1)) : 0,
+      avgDailySales: roundTo(avgDailySales),
+      totalSalesVolume,
       activeAlerts,
-      recommendationsReady: 0,
+      topIncreasingProducts,
+      topDecreasingProducts,
+      recommendationsReady: totalProducts,
+      trendSummary: {
+        recentSales: trend.recentSales,
+        previousSales: trend.previousSales,
+        percentChange: trend.percentChange,
+        trendDirection: trend.trendDirection,
+      },
     });
   } catch (error) {
     return res.status(500).json({
@@ -165,7 +285,27 @@ export const getTrends = async (req, res) => {
       };
     });
 
-    return res.status(200).json(response);
+    // Demand trend summary
+    const demandTrendSummary = await Sales.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalQuantity: { $sum: "$quantity" },
+          recordCount: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const trendData = demandTrendSummary.length > 0 ? {
+      totalSales: demandTrendSummary[0].totalQuantity,
+      totalRecords: demandTrendSummary[0].recordCount,
+      averageMonthly: demandTrendSummary[0].totalQuantity / Math.max(demandTrendSummary[0].recordCount / 12, 1),
+    } : { totalSales: 0, totalRecords: 0, averageMonthly: 0 };
+
+    return res.status(200).json({
+      trends: response,
+      demandTrendSummary: trendData,
+    });
   } catch (error) {
     return res.status(500).json({
       message: "Failed to fetch trends",

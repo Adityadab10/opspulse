@@ -10,12 +10,8 @@ import alertRoutes from "./routes/alertRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import predictionRoutes from "./routes/predictionRoutes.js";
 import newsRoutes from "./routes/newsRoutes.js";
-import {
-  predictAllProducts,
-  predictByProduct,
-  comparePredictions,
-} from "./controllers/predictionController.js";
-
+import { predictAllProducts, predictByProduct, comparePredictions } from "./controllers/predictionController.js";
+import { getProductIntelligence } from "./controllers/productIntelligenceController.js";
 
 
 dotenv.config();
@@ -45,6 +41,9 @@ app.get("/api/compare-predictions", comparePredictions);
 // Backward-compatible aliases for legacy clients still calling old endpoints.
 app.post("/api/predict/:productId", predictByProduct);
 app.get("/api/predict/:productId", predictByProduct);
+
+// Product intelligence endpoint
+app.get("/api/products/:productId/intelligence", getProductIntelligence);
 
 // DB connection
 mongoose

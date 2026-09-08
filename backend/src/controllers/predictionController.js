@@ -531,7 +531,72 @@ const persistPrediction = async (productId, unifiedPrediction) => {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   ).populate("productId", "name category");
 
+  // Auto-generate alerts based on prediction results
+  await generateAlertForProduct(productId, saved);
+
   return mapPredictionDocToResponse(saved);
+};
+
+const generateAlertForProduct = async (productId, predictionDoc) => {
+  const percentChange = toNumber(predictionDoc.percentChange, 0);
+  const confidence = predictionDoc.confidence;
+  const decision = predictionDoc.decision;
+  const impact = predictionDoc.impact;
+
+  // Only generate alerts for significant changes with reasonable confidence
+  const significantChange = Math.abs(percentChange) >= 10;
+  const meaningfulConfidence = confidence === "High" || confidence === "Medium";
+
+  if (!significantChange && !meaningfulConfidence) {
+    // Clear any existing alerts if the situation has normalized
+    await Alert.deleteMany({ productId, isActive: true });
+    return;
+  }
+
+  // Determine alert type and message
+  let type, message, severity;
+
+  if (percentChange > 15 && confidence === "High") {
+    type = "HIGH_DEMAND";
+    message = `High demand forecast: ${percentChange.toFixed(1)}% increase expected`;
+    severity = "HIGH";
+  } else if (percentChange < -15 && confidence === "High") {
+    type = "LOW_DEMAND";
+    message = `Low demand forecast: ${Math.abs(percentChange).toFixed(1)}% decrease expected`;
+    severity = "HIGH";
+  } else if (percentChange > 10 && meaningfulConfidence) {
+    type = "HIGH_DEMAND";
+    message = `Demand rising: ${percentChange.toFixed(1)}% increase expected (${decision})`;
+    severity = "MEDIUM";
+  } else if (percentChange < -10 && meaningfulConfidence) {
+    type = "LOW_DEMAND";
+    message = `Demand falling: ${Math.abs(percentChange).toFixed(1)}% decrease expected (${decision})`;
+    severity = "MEDIUM";
+  } else if (decision === "increase" && meaningfulConfidence) {
+    type = "TREND_UP";
+    message = `Demand trend increasing: ${decision} decision for ${percentChange.toFixed(1)}% change`;
+    severity = "LOW";
+  } else if (decision === "reduce" && meaningfulConfidence) {
+    type = "TREND_DOWN";
+    message = `Demand trend decreasing: ${decision} decision for ${Math.abs(percentChange).toFixed(1)}% change`;
+    severity = "LOW";
+  } else {
+    // Clear alerts if no significant condition met
+    await Alert.deleteMany({ productId, isActive: true });
+    return;
+  }
+
+  // Upsert the alert (matching on productId + type)
+  await Alert.findOneAndUpdate(
+    { productId, type },
+    {
+      message,
+      severity,
+      percentChange,
+      isActive: true,
+    },
+    { upsert: true, new: true }
+  );
 };
 
 const getPredictionForProduct = async ({

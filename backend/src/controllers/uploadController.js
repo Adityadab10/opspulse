@@ -14,14 +14,26 @@ export const uploadSalesCsv = async (req, res) => {
 
     const rawRows = await parseCsvBuffer(req.file.buffer);
     if (!rawRows.length) {
-      return res.status(400).json({ message: "CSV is empty" });
+      return res.status(400).json({ message: "CSV is empty", valid: 0, invalid: 0 });
     }
 
-    const validRows = rawRows.map(normalizeCsvRow).filter(Boolean);
-    if (!validRows.length) {
-      return res.status(400).json({ message: "No valid rows found in CSV" });
-    }
+    let validRows = [];
+    const invalidRows = [];
 
+    rawRows.forEach((row, index) => {
+      const normalized = normalizeCsvRow(row);
+      if (normalized) {
+        validRows.push(normalized);
+      } else {
+        invalidRows.push({
+          rowIndex: index + 1,
+          rawRow: row,
+          reason: "Missing or invalid required fields (productName, category, quantity, date)",
+        });
+      }
+    });
+
+    // Track product creation vs update
     const uniqueProducts = new Map();
     for (const row of validRows) {
       const key = `${row.productName.toLowerCase()}__${row.category.toLowerCase()}`;
@@ -86,9 +98,18 @@ export const uploadSalesCsv = async (req, res) => {
       ? await Sales.bulkWrite(salesOps, { ordered: false })
       : null;
 
-    return res.status(201).json({
+    const summary = {
+      totalRows: rawRows.length,
+      validRows: validRows.length,
+      invalidRows: invalidRows.length,
       productsCreated: productWriteResult?.upsertedCount || 0,
       salesRecordsInserted: salesWriteResult?.upsertedCount || 0,
+      invalidDetails: invalidRows,
+    };
+
+    return res.status(201).json({
+      message: "Sales data uploaded successfully",
+      summary,
     });
   } catch (error) {
     return res.status(500).json({
