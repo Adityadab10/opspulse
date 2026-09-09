@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Product from "../models/Product.js";
 import Prediction from "../models/Prediction.js";
 import { generatePredictionForProduct } from "../services/predictionService.js";
+import { getPredictionByProductId, getProductByLegacyId, getAllProducts } from "../config/postgres.js";
 
 const ML_PREDICT_URL = process.env.ML_PREDICT_URL || "http://localhost:5002/predict";
 const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models";
@@ -678,24 +679,31 @@ export const predictByProduct = async (req, res) => {
       return sendError(res, 400, "Invalid productId");
     }
 
-    const product = await Product.findById(productId).lean();
-    if (!product) {
+    const postgresProduct = await getProductByLegacyId(productId);
+    if (!postgresProduct) {
       return sendError(res, 404, "Product not found");
     }
 
-    const existingPrediction = await Prediction.findOne({ productId }).populate(
-      "productId",
-      "name category"
-    );
+    const predictionFromPg = await getPredictionByProductId(postgresProduct.id);
 
+    if (predictionFromPg) {
+      const productWithMongoId = { ...postgresProduct, _id: postgresProduct.legacy_mongo_id };
+      const prediction = mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+      return sendSuccess(res, 200, prediction, {
+        cached: !forceRefresh,
+        cacheTtlMs: PREDICTION_CACHE_TTL_MS,
+      });
+    }
+
+    const productWithMongoId = { ...postgresProduct, _id: postgresProduct.legacy_mongo_id };
     const prediction = await getPredictionForProduct({
-      product,
+      product: productWithMongoId,
       forceRefresh,
-      preloadedPrediction: existingPrediction,
+      preloadedPrediction: null,
     });
 
     return sendSuccess(res, 200, prediction, {
-      cached: !forceRefresh,
+      cached: false,
       cacheTtlMs: PREDICTION_CACHE_TTL_MS,
     });
   } catch (error) {
@@ -711,7 +719,7 @@ export const predictByProduct = async (req, res) => {
 export const predictAllProducts = async (req, res) => {
   try {
     const forceRefresh = isTruthy(req.query.refresh);
-    const products = await Product.find({}, "_id name category").lean();
+    const products = await getAllProducts();
 
     if (!products.length) {
       return sendSuccess(
@@ -722,27 +730,24 @@ export const predictAllProducts = async (req, res) => {
           saved: 0,
           failed: 0,
           predictions: [],
-          errors: [],
         },
         { cacheTtlMs: PREDICTION_CACHE_TTL_MS }
       );
     }
 
-    const productIds = products.map((product) => product._id);
-    const existingPredictions = await Prediction.find({ productId: { $in: productIds } }).populate(
-      "productId",
-      "name category"
-    );
-    const existingByProductId = new Map(
-      existingPredictions.map((doc) => [String(doc.productId?._id || doc.productId), doc])
-    );
-
     const settled = await Promise.allSettled(
       products.map(async (product) => {
+        const productWithMongoId = { ...product, _id: product.legacy_mongo_id };
+        const predictionFromPg = await getPredictionByProductId(product.id);
+
+        if (predictionFromPg) {
+          return mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+        }
+
         return getPredictionForProduct({
-          product,
+          product: productWithMongoId,
           forceRefresh,
-          preloadedPrediction: existingByProductId.get(String(product._id)),
+          preloadedPrediction: null,
         });
       })
     );
@@ -800,7 +805,7 @@ export const getUnifiedPredictions = async (req, res) => {
       }
     }
 
-    const products = await Product.find({}, "_id name category").lean();
+    const products = await getAllProducts();
 
     if (!Array.isArray(products) || products.length === 0) {
       return sendSuccess(res, 200, [], {
@@ -810,21 +815,19 @@ export const getUnifiedPredictions = async (req, res) => {
       });
     }
 
-    const productIds = products.map((product) => product._id);
-    const existingPredictions = await Prediction.find({ productId: { $in: productIds } }).populate(
-      "productId",
-      "name category"
-    );
-    const existingByProductId = new Map(
-      existingPredictions.map((doc) => [String(doc.productId?._id || doc.productId), doc])
-    );
-
     const settled = await Promise.allSettled(
       products.map(async (product) => {
+        const productWithMongoId = { ...product, _id: product.legacy_mongo_id };
+        const predictionFromPg = await getPredictionByProductId(product.id);
+
+        if (predictionFromPg) {
+          return mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+        }
+
         return getPredictionForProduct({
-          product,
+          product: productWithMongoId,
           forceRefresh,
-          preloadedPrediction: existingByProductId.get(String(product._id)),
+          preloadedPrediction: null,
         });
       })
     );
