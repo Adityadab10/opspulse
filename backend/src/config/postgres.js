@@ -99,6 +99,19 @@ const getActiveAlertsByProductId = async (productId) => {
   return result.rows;
 };
 
+const getRecentActiveAlerts = async () => {
+  const result = await pool.query(`
+    SELECT a.id, a.product_id, a.type, a.message, a.severity, a.percent_change, a.is_active, a.created_at,
+           p.name AS productName, p.category AS productCategory
+    FROM alerts a
+    LEFT JOIN products p ON a.product_id = p.id
+    WHERE a.is_active = true
+    ORDER BY a.created_at DESC
+    LIMIT 5
+  `);
+  return result.rows;
+};
+
 const getProductsByLegacyIdPattern = async (pattern) => {
   const result = await pool.query('SELECT id, name, category, legacy_mongo_id FROM products WHERE legacy_mongo_id LIKE $1 ORDER BY name', [pattern]);
   return result.rows;
@@ -121,5 +134,6 @@ export {
   countPredictionsByProductId,
   countAllPredictions,
   getActiveAlertsByProductId,
+  getRecentActiveAlerts,
   getProductsByLegacyIdPattern,
 };

@@ -1,17 +1,28 @@
 import mongoose from "mongoose";
 import Alert from "../models/Alert.js";
 import Product from "../models/Product.js";
+import { getRecentActiveAlerts } from "../config/postgres.js";
 
 // GET latest active alerts
 export const getAlerts = async (req, res) => {
   try {
-    const alerts = await Alert.find({ isActive: true })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate("productId", "name category")
-      .lean();
+    const alerts = await getRecentActiveAlerts();
 
-    return res.status(200).json(alerts);
+    const mappedAlerts = alerts.map((a) => ({
+      _id: a.id,
+      productId: {
+        name: a.productName || "Unknown Product",
+        category: a.productCategory || "Uncategorized",
+      },
+      type: a.type,
+      message: a.message,
+      severity: a.severity,
+      percentChange: a.percent_change || 0,
+      isActive: a.is_active,
+      createdAt: a.created_at,
+    }));
+
+    return res.status(200).json(mappedAlerts);
   } catch (error) {
     return res.status(500).json({
       message: "Failed to fetch alerts",
