@@ -1,43 +1,25 @@
-import Product from "../models/Product.js";
-import Sales from "../models/Sales.js";
-import Alert from "../models/Alert.js";
-import { roundTo } from "../helpers/analytics.js";
-
-const getLastSixMonthWindow = () => {
-  const now = new Date();
-  const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
-
-  const monthKeys = [];
-  for (let i = 0; i < 6; i += 1) {
-    const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    monthKeys.push(key);
-  }
-
-  return { startDate, monthKeys };
-};
+import { roundTo, calculatePercentChange } from "../helpers/analytics.js";
+import pool, { getMigratedSalesSummary } from "../config/postgres.js";
 
 const computeTrend = (salesDocs, recentDays = 30) => {
   if (!salesDocs || salesDocs.length === 0) {
     return { recentSales: 0, previousSales: 0, percentChange: 0, trendDirection: "stable" };
   }
 
-  // Get recent period sales (last recentDays days)
   const now = new Date();
   const cutoffDate = new Date(now);
   cutoffDate.setDate(cutoffDate.getDate() - recentDays);
 
   const recentSales = salesDocs
-    .filter((s) => new Date(s.date) <= now && new Date(s.date) > cutoffDate)
+    .filter((s) => new Date(s.sale_date) <= now && new Date(s.sale_date) > cutoffDate)
     .reduce((sum, s) => sum + (s.quantity || 0), 0);
 
-  // Previous period: same length before recent period
   const prevEndDate = new Date(cutoffDate);
   const prevStartDate = new Date(cutoffDate);
   prevStartDate.setDate(prevStartDate.getDate() - recentDays);
 
   const previousSales = salesDocs
-    .filter((s) => new Date(s.date) <= prevEndDate && new Date(s.date) > prevStartDate)
+    .filter((s) => new Date(s.sale_date) <= prevEndDate && new Date(s.sale_date) > prevStartDate)
     .reduce((sum, s) => sum + (s.quantity || 0), 0);
 
   let percentChange = 0;
@@ -57,24 +39,26 @@ const computeTrend = (salesDocs, recentDays = 30) => {
   return { recentSales, previousSales, percentChange, trendDirection };
 };
 
-export const getSummary = async (req, res) => {
+const getSummary = async (req, res) => {
   try {
-    const [totalProducts, activeAlerts, salesDocs] = await Promise.all([
-      Product.countDocuments(),
-      Alert.countDocuments(),
-      Sales.find({}).sort({ date: 1 }).lean(),
+    const [totalProductsResult, activeAlertsResult, allSales] = await Promise.all([
+      countMigratedProducts(),
+      countAllActiveAlerts(),
+      getAllSales(),
     ]);
 
-    const totalSalesVolume = salesDocs.reduce((sum, s) => sum + (s.quantity || 0), 0);
+    const totalProducts = totalProductsResult;
+    const activeAlerts = activeAlertsResult;
+    const totalSalesVolume = allSales.reduce((sum, s) => sum + (s.quantity || 0), 0);
     const avgDailySales = totalSalesVolume / 30 || 0;
-    const avgMonthlySales = totalSalesVolume / 30 || 0;
+    const avgMonthlySales = totalProducts ? roundTo(totalSalesVolume / Math.max(totalProducts, 1)) : 0;
 
-    const trend = computeTrend(salesDocs);
+    const trend = computeTrend(allSales);
 
     // Group sales by product for top products calculation
     const productSalesMap = new Map();
-    for (const sale of salesDocs) {
-      const key = sale.productId;
+    for (const sale of allSales) {
+      const key = sale.product_id;
       if (!productSalesMap.has(key)) {
         productSalesMap.set(key, { productId: key, totalQty: 0, sales: [] });
       }
@@ -123,9 +107,18 @@ export const getSummary = async (req, res) => {
     }
 
     const topIncreasingProducts = topIncreasing.map((r) => {
-      const product = await Product.findById(r.productId).lean();
+      const product = await pool.query('SELECT id, name, category, legacy_mongo_id FROM products WHERE id = $1', [r.productId]);
+      const prod = product.rows[0];
+      if (!prod || prod.legacy_mongo_id === 'test123') {
+        return {
+          name: "Unknown Product",
+          quantity: r.totalQty,
+          percentChange: r.percentChange,
+          trendDirection: r.trendDirection,
+        };
+      }
       return {
-        name: product ? product.name : "Unknown Product",
+        name: prod.name,
         quantity: r.totalQty,
         percentChange: r.percentChange,
         trendDirection: r.trendDirection,
@@ -133,9 +126,19 @@ export const getSummary = async (req, res) => {
     });
 
     const topDecreasingProducts = topDecreasing.map((r) => {
-      const product = await Product.findById(r.productId).lean();
+      const product = await pool.query('SELECT id, name, category, legacy_mongo_id FROM products WHERE id = $1', [r.productId]);
+      const productRows = product.rows;
+      const prod = productRows.length > 0 ? productRows[0] : null;
+      if (!prod || prod.legacy_mongo_id === 'test123') {
+        return {
+          name: "Unknown Product",
+          quantity: r.totalQty,
+          percentChange: r.percentChange,
+          trendDirection: r.trendDirection,
+        };
+      }
       return {
-        name: product ? product.name : "Unknown Product",
+        name: prod.name,
         quantity: r.totalQty,
         percentChange: r.percentChange,
         trendDirection: r.trendDirection,
@@ -159,6 +162,7 @@ export const getSummary = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Dashboard summary error:", error.message);
     return res.status(500).json({
       message: "Failed to fetch dashboard summary",
       error: error.message,
@@ -166,147 +170,82 @@ export const getSummary = async (req, res) => {
   }
 };
 
-export const getTrends = async (req, res) => {
+const getTrends = async (req, res) => {
   try {
     const now = new Date();
     const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
     const sixMonthKeys = Array.from({ length: 6 }, (_, i) => {
       const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
     });
 
-    const buildPipeline = (withDateFilter) => {
-      const pipeline = [];
+    // Get all sales data ordered by date
+    const allSales = await getAllSales();
 
-      if (withDateFilter) {
-        pipeline.push({
-          $match: { date: { $gte: startDate } },
-        });
+    // Filter sales within the 6-month window (UTC)
+    const filteredSales = allSales.filter((s) => {
+      const saleDate = new Date(s.sale_date);
+      return saleDate >= startDate && saleDate <= new Date();
+    });
+
+    // Group sales by product and month
+    const productMonthMap = new Map();
+    for (const sale of filteredSales) {
+      const productId = sale.product_id;
+      if (!productId) continue;
+      const date = new Date(sale.sale_date);
+      const monthKey = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+
+      if (!productMonthMap.has(productId)) {
+        productMonthMap.set(productId, new Map());
       }
-
-      pipeline.push(
-        {
-          $group: {
-            _id: {
-              productId: "$productId",
-              year: { $year: "$date" },
-              month: { $month: "$date" },
-            },
-            monthlyQty: { $sum: "$quantity" },
-          },
-        },
-        {
-          $addFields: {
-            sortDate: {
-              $dateFromParts: {
-                year: "$_id.year",
-                month: "$_id.month",
-                day: 1,
-              },
-            },
-            monthKey: {
-              $concat: [
-                { $toString: "$_id.year" },
-                "-",
-                {
-                  $cond: [
-                    { $lt: ["$_id.month", 10] },
-                    { $concat: ["0", { $toString: "$_id.month" }] },
-                    { $toString: "$_id.month" },
-                  ],
-                },
-              ],
-            },
-          },
-        },
-        { $sort: { sortDate: 1 } },
-        {
-          $group: {
-            _id: "$_id.productId",
-            totalSales: { $sum: "$monthlyQty" },
-            points: {
-              $push: {
-                month: "$monthKey",
-                quantity: "$monthlyQty",
-                sortDate: "$sortDate",
-              },
-            },
-          },
-        },
-        { $sort: { totalSales: -1 } },
-        { $limit: 3 },
-        {
-          $lookup: {
-            from: "products",
-            localField: "_id",
-            foreignField: "_id",
-            as: "product",
-          },
-        },
-        { $unwind: "$product" },
-        {
-          $project: {
-            _id: 0,
-            product: "$product.name",
-            totalSales: 1,
-            points: 1,
-          },
-        }
-      );
-
-      return pipeline;
-    };
-
-    // First try strict last-6-months data.
-    let rows = await Sales.aggregate(buildPipeline(true));
-
-    // If no rows found, fallback to all-time data (still top 3, sorted by date).
-    let usedFallback = false;
-    if (!rows.length) {
-      rows = await Sales.aggregate(buildPipeline(false));
-      usedFallback = true;
+      const monthData = productMonthMap.get(productId);
+      const existing = monthData.get(monthKey) || 0;
+      monthData.set(monthKey, existing + (sale.quantity || 0));
     }
 
-    const response = rows.map((row) => {
-      if (!usedFallback) {
-        const pointMap = new Map(row.points.map((p) => [p.month, p.quantity]));
-        return {
-          product: row.product,
-          data: sixMonthKeys.map((k) => pointMap.get(k) || 0),
-        };
-      }
+    // Get product names for all product IDs
+    const productIds = [...productMonthMap.keys()];
+    const productNameMap = new Map();
+    if (productIds.length > 0) {
+      const placeholders = productIds.map((_, i) => `$${i + 1}`).join(',');
+      const result = await pool.query(
+        `SELECT id, name, category, legacy_mongo_id FROM products WHERE id IN (${placeholders})`,
+        productIds
+      );
+      result.rows.forEach(p => {
+        if (p.legacy_mongo_id !== 'test123') {
+          productNameMap.set(p.id, p.name);
+        }
+      });
+    }
 
-      // Fallback mode: no date filter, return latest 6 month points per product.
-      const lastSix = row.points.slice(-6).map((p) => p.quantity);
-      return {
-        product: row.product,
-        data: lastSix,
-      };
+    // Build response rows
+    const response = productIds.map((productId) => {
+      const monthData = productMonthMap.get(productId) || new Map();
+      const data = sixMonthKeys.map((k) => monthData.get(k) || 0);
+      const name = productNameMap.get(productId) || "Unknown Product";
+      return { product: name, data };
     });
 
-    // Demand trend summary
-    const demandTrendSummary = await Sales.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalQuantity: { $sum: "$quantity" },
-          recordCount: { $sum: 1 },
-        },
-      },
-    ]);
+    // Demand trend summary - total and average from migrated sales only
+    const migratedSalesSummary = await getMigratedSalesSummary();
+    const totalQuantity = migratedSalesSummary.totalQuantity;
+    const recordCount = migratedSalesSummary.recordCount;
 
-    const trendData = demandTrendSummary.length > 0 ? {
-      totalSales: demandTrendSummary[0].totalQuantity,
-      totalRecords: demandTrendSummary[0].recordCount,
-      averageMonthly: demandTrendSummary[0].totalQuantity / Math.max(demandTrendSummary[0].recordCount / 12, 1),
-    } : { totalSales: 0, totalRecords: 0, averageMonthly: 0 };
+    const demandTrendSummary = {
+      totalSales: totalQuantity,
+      totalRecords: recordCount,
+      averageMonthly: recordCount > 0 ? totalQuantity / Math.max(Math.floor(recordCount / 12), 1) : 0,
+    };
 
     return res.status(200).json({
       trends: response,
-      demandTrendSummary: trendData,
+      demandTrendSummary,
     });
   } catch (error) {
+    console.error("Dashboard trends error:", error.message);
     return res.status(500).json({
       message: "Failed to fetch trends",
       error: error.message,
@@ -314,7 +253,7 @@ export const getTrends = async (req, res) => {
   }
 };
 
-export const getDistribution = async (req, res) => {
+const getDistribution = async (req, res) => {
   try {
     return res.status(200).json({
       increase: 0,
@@ -329,60 +268,51 @@ export const getDistribution = async (req, res) => {
   }
 };
 
-export const getProductAnalysis = async (req, res) => {
+const getProductAnalysis = async (req, res) => {
   try {
-    const [products, salesAgg] = await Promise.all([
-      Product.find().lean(),
-      Sales.aggregate([
-        {
-          $group: {
-            _id: {
-              productId: "$productId",
-              year: { $year: "$date" },
-              month: { $month: "$date" },
-            },
-            totalQuantity: { $sum: "$quantity" },
-          },
-        },
-        { $sort: { "_id.productId": 1, "_id.year": -1, "_id.month": -1 } },
-        {
-          $group: {
-            _id: "$_id.productId",
-            periods: {
-              $push: {
-                year: "$_id.year",
-                month: "$_id.month",
-                totalQuantity: "$totalQuantity",
-              },
-            },
-            avgSales: { $avg: "$totalQuantity" },
-          },
-        },
-      ]),
+    const [products, allSales] = await Promise.all([
+      getAllProducts(),
+      getAllSales(),
     ]);
 
-    const salesMap = new Map(salesAgg.map((item) => [String(item._id), item]));
+    // Build sales map: productId -> aggregated sales periods
+    const salesMap = new Map();
+    for (const sale of allSales) {
+      const key = sale.product_id;
+      if (!key) continue;
+      if (!salesMap.has(key)) {
+        salesMap.set(key, { productId: key, periods: [], totalQty: 0 });
+      }
+      salesMap.get(key).periods.push(sale);
+      salesMap.get(key).totalQty += sale.quantity || 0;
+    }
 
     const analysis = products.map((product) => {
-      const salesData = salesMap.get(String(product._id));
-      const periods = salesData?.periods || [];
-      const current = periods[0]?.totalQuantity || 0;
-      const previous = periods[1]?.totalQuantity || 0;
+      const salesData = salesMap.get(product.id) || { periods: [], totalQty: 0 };
+      const periods = salesData.periods || [];
+
+      // Sort periods by date (most recent first) and take two most recent
+      const sortedPeriods = [...periods].sort((a, b) => new Date(b.sale_date) - new Date(a.sale_date));
+      const current = sortedPeriods[0]?.quantity || 0;
+      const previous = sortedPeriods[1]?.quantity || 0;
 
       return {
-        productId: product._id,
+        productId: product.id,
         name: product.name,
         category: product.category,
-        avgSales: salesData ? roundTo(salesData.avgSales) : 0,
-        percentChange: roundTo(calculatePercentChange(current, previous)),
+        avgSales: salesData.totalQty > 0 ? roundTo(salesData.totalQty / Math.max(sortedPeriods.length, 1)) : 0,
+        percentChange: current > 0 || previous > 0 ? roundTo(calculatePercentChange(current, previous)) : 0,
       };
     });
 
     return res.status(200).json(analysis);
   } catch (error) {
+    console.error("Product analysis error:", error.message);
     return res.status(500).json({
       message: "Failed to fetch product analysis",
       error: error.message,
     });
   }
 };
+
+export { getSummary, getTrends, getDistribution, getProductAnalysis };

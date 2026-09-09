@@ -1,36 +1,32 @@
-import mongoose from "mongoose";
-import Product from "../models/Product.js";
-import Sales from "../models/Sales.js";
-import Prediction from "../models/Prediction.js";
-import Alert from "../models/Alert.js";
 import { roundTo, calculatePercentChange } from "../helpers/analytics.js";
 
 const RECENT_DAYS = 30;
-
-const getMonthKey = (date) => {
-  const d = new Date(date);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-};
 
 const getProductIntelligence = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
+    // Check if productId is a valid UUID format
+    const uuidPattern = /^[0-9a-f-]{36}$/i;
+    if (!uuidPattern.test(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const productExists = await Product.exists({ _id: productId });
-    if (!productExists) {
+    // Look up product from PostgreSQL
+    const product = await getProductById(productId);
+
+    // If product not found or is a test record (legacy_mongo_id = 'test123'), return 404
+    if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const product = await Product.findById(productId).lean();
+    // Filter out test products (legacy_mongo_id = 'test123')
+    if (product.legacy_mongo_id === 'test123') {
+      return res.status(404).json({ message: "Product not found" });
+    }
 
-    // Get all sales records for this product, sorted by date
-    const salesDocs = await Sales.find({ productId })
-      .sort({ date: 1 })
-      .lean();
+    // Get sales records for this product from PostgreSQL, sorted by date
+    const salesDocs = await getSalesByProductId(productId);
 
     // Calculate historical demand data
     let historicalSales = [];
@@ -41,10 +37,14 @@ const getProductIntelligence = async (req, res) => {
     let trendDirection = "stable";
 
     if (salesDocs.length > 0) {
-      // Group sales by month
+      // Sort sales by date (ascending)
+      const sortedSales = [...salesDocs].sort((a, b) => new Date(a.sale_date) - new Date(b.sale_date));
+
+      // Group sales by month (UTC)
       const monthMap = new Map();
-      for (const row of salesDocs) {
-        const key = getMonthKey(row.date);
+      for (const row of sortedSales) {
+        const date = new Date(row.sale_date);
+        const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
         monthMap.set(key, (monthMap.get(key) || 0) + (row.quantity || 0));
       }
 
@@ -52,14 +52,18 @@ const getProductIntelligence = async (req, res) => {
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([, total]) => total);
 
-      avgSales = monthlyTotals.reduce((sum, total) => sum + total, 0) / monthlyTotals.length || 0;
+      if (monthlyTotals.length > 0) {
+        avgSales = monthlyTotals.reduce((sum, total) => sum + total, 0) / monthlyTotals.length;
+      }
 
-      // Calculate trend: recent period vs previous comparable period
-      const recentPeriod = RECENT_DAYS; // last 30 days
-      const recentQty = salesDocs
+      // Calculate trend: recent period (last 30 days) vs previous comparable period
+      const now = new Date();
+      const recentPeriodDays = RECENT_DAYS; // last 30 days
+
+      const recentQty = sortedSales
         .filter((s) => {
-          const saleDate = new Date(s.date);
-          const diffDays = (new Date() - saleDate) / (1000 * 60 * 60 * 24);
+          const saleDate = new Date(s.sale_date);
+          const diffDays = (now - saleDate) / (1000 * 60 * 60 * 24);
           return diffDays >= 0 && diffDays < RECENT_DAYS;
         })
         .reduce((sum, s) => sum + (s.quantity || 0), 0);
@@ -72,9 +76,9 @@ const getProductIntelligence = async (req, res) => {
       const prevStartDate = new Date(cutoffDate);
       prevStartDate.setDate(prevStartDate.getDate() - RECENT_DAYS);
 
-      const prevQty = salesDocs
+      const prevQty = sortedSales
         .filter((s) => {
-          const saleDate = new Date(s.date);
+          const saleDate = new Date(s.sale_date);
           return saleDate >= prevStartDate && saleDate < prevEndDate;
         })
         .reduce((sum, s) => sum + (s.quantity || 0), 0);
@@ -92,12 +96,16 @@ const getProductIntelligence = async (req, res) => {
         percentChange = 0;
         trendDirection = "stable";
       }
+
+      // Build historicalSales array from sales docs
+      historicalSales = sortedSales.map((s) => ({
+        date: s.sale_date,
+        quantity: s.quantity,
+      }));
     }
 
-    // Get the latest prediction
-    const predictionDoc = await Prediction.findOne({ productId })
-      .sort({ predictedAt: -1 })
-      .lean();
+    // Get the latest prediction from PostgreSQL
+    const predictionDoc = await getPredictionByProductId(productId);
 
     let forecast = {
       predictedDemand: 0,
@@ -116,37 +124,32 @@ const getProductIntelligence = async (req, res) => {
 
     if (predictionDoc) {
       forecast = {
-        predictedDemand: predictionDoc.predictedDemand,
-        rulePrediction: predictionDoc.rulePrediction,
-        mlPrediction: predictionDoc.mlPrediction,
-        adjustedPrediction: predictionDoc.adjustedPrediction,
+        predictedDemand: predictionDoc.predicted_demand,
+        rulePrediction: predictionDoc.rule_prediction,
+        mlPrediction: predictionDoc.ml_prediction,
+        adjustedPrediction: predictionDoc.adjusted_prediction,
         confidence: predictionDoc.confidence,
-        predictionSource: predictionDoc.predictionSource,
-        seasonTag: predictionDoc.seasonTag,
+        predictionSource: predictionDoc.prediction_source,
+        seasonTag: predictionDoc.season_tag,
         decision: predictionDoc.decision,
         impact: predictionDoc.impact,
-        percentChange: predictionDoc.percentChange,
+        percentChange: predictionDoc.percent_change,
         reason: predictionDoc.reason,
-        contributingFactors: predictionDoc.contributingFactors,
+        contributingFactors: predictionDoc.contributing_factors,
       };
     }
 
-    // Get active alerts for this product
-    const activeAlerts = await Alert.find({ productId, isActive: true })
-      .sort({ createdAt: -1 })
-      .lean();
+    // Get active alerts for this product from PostgreSQL
+    const activeAlerts = await getActiveAlertsByProductId(productId);
 
     // Build response
     const intelligence = {
       product: {
-        id: product._id,
+        id: product.id,
         name: product.name,
         category: product.category,
       },
-      historicalSales: salesDocs.map((s) => ({
-        date: s.date,
-        quantity: s.quantity,
-      })),
+      historicalSales: historicalSales,
       summary: {
         avgSales: avgSales ? roundTo(avgSales) : 0,
         recentSales,
@@ -165,6 +168,7 @@ const getProductIntelligence = async (req, res) => {
 
     return res.status(200).json(intelligence);
   } catch (error) {
+    console.error("Product intelligence fetch error:", error.message);
     return res.status(500).json({
       message: "Failed to fetch product intelligence",
       error: error.message,
