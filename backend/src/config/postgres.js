@@ -91,6 +91,127 @@ const countAllPredictions = async () => {
   return result.rows[0].cnt;
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const createProduct = async (name, category) => {
+  const result = await pool.query(
+    `INSERT INTO products (name, category, created_at, updated_at)
+     VALUES ($1, $2, now(), now())
+     RETURNING id, name, category, legacy_mongo_id, created_at, updated_at`,
+    [String(name).trim(), String(category).trim()],
+  );
+  return result.rows[0] || null;
+};
+
+const resolveProduct = async (productReference, queryable = pool) => {
+  const reference = String(productReference || '').trim();
+  if (!reference) return null;
+
+  const legacyResult = await queryable.query(
+    'SELECT id, name, category, legacy_mongo_id FROM products WHERE legacy_mongo_id = $1',
+    [reference],
+  );
+  if (legacyResult.rows.length > 1) {
+    throw new Error('Ambiguous product legacy_mongo_id mapping');
+  }
+  if (legacyResult.rows.length === 1) return legacyResult.rows[0];
+
+  if (!UUID_PATTERN.test(reference)) return null;
+  const uuidResult = await queryable.query(
+    'SELECT id, name, category, legacy_mongo_id FROM products WHERE id = $1',
+    [reference],
+  );
+  return uuidResult.rows[0] || null;
+};
+
+const validSaleDate = (value) => {
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const insertSale = async (productReference, saleDate, quantity) => {
+  const product = await resolveProduct(productReference);
+  if (!product) return null;
+
+  const date = validSaleDate(saleDate);
+  const numericQuantity = Number(quantity);
+  if (!date || !Number.isInteger(numericQuantity) || numericQuantity <= 0) return null;
+
+  const inserted = await pool.query(
+    `INSERT INTO sales (product_id, sale_date, quantity, created_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (product_id, sale_date) DO NOTHING
+     RETURNING id, product_id, sale_date, quantity, created_at`,
+    [product.id, date, numericQuantity],
+  );
+  const sale = inserted.rows[0]
+    || (await pool.query(
+      'SELECT id, product_id, sale_date, quantity, created_at FROM sales WHERE product_id = $1 AND sale_date = $2',
+      [product.id, date],
+    )).rows[0];
+
+  return { sale, product, inserted: inserted.rows.length === 1 };
+};
+
+const createOrFindCsvProducts = async (client, products) => {
+  const productIdByKey = new Map();
+  let created = 0;
+
+  for (const product of products) {
+    const existing = await client.query(
+      'SELECT id FROM products WHERE name = $1 AND category = $2 ORDER BY id LIMIT 1',
+      [product.name, product.category],
+    );
+    const row = existing.rows[0] || (await client.query(
+      `INSERT INTO products (name, category, created_at, updated_at)
+       VALUES ($1, $2, now(), now())
+       RETURNING id`,
+      [product.name, product.category],
+    )).rows[0];
+    if (existing.rows.length === 0) created += 1;
+    productIdByKey.set(product.key, row.id);
+  }
+
+  return { productIdByKey, created };
+};
+
+const insertCsvSales = async (client, rows, productIdByKey) => {
+  let inserted = 0;
+  for (const row of rows) {
+    const productId = productIdByKey.get(row.productKey);
+    if (!productId) throw new Error(`Product resolution failed for CSV row ${row.rowIndex}`);
+    const result = await client.query(
+      `INSERT INTO sales (product_id, sale_date, quantity, created_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (product_id, sale_date) DO NOTHING
+       RETURNING id`,
+      [productId, row.date, row.quantity],
+    );
+    inserted += result.rows.length;
+  }
+  return inserted;
+};
+
+const importCsvSales = async (products, rows) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { productIdByKey, created } = await createOrFindCsvProducts(client, products);
+    const salesInserted = await insertCsvSales(client, rows, productIdByKey);
+    await client.query('COMMIT');
+    return { productsCreated: created, salesRecordsInserted: salesInserted };
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('CSV import rollback failed:', rollbackError.message);
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const getActiveAlertsByProductId = async (productId) => {
   const result = await pool.query(
     'SELECT id, product_id, type, message, severity, percent_change, is_active, created_at FROM alerts WHERE product_id = $1 AND is_active = true ORDER BY created_at DESC',
@@ -133,6 +254,10 @@ export {
   getPredictionByProductId,
   countPredictionsByProductId,
   countAllPredictions,
+  createProduct,
+  resolveProduct,
+  insertSale,
+  importCsvSales,
   getActiveAlertsByProductId,
   getRecentActiveAlerts,
   getProductsByLegacyIdPattern,

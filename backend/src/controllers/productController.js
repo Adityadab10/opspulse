@@ -1,19 +1,27 @@
 import Product from "../models/Product.js";
+import { createProduct as createPostgresProduct } from "../config/postgres.js";
+
+const toProductResponse = (product) => ({
+  _id: product.id,
+  id: product.id,
+  name: product.name,
+  category: product.category,
+  legacy_mongo_id: product.legacy_mongo_id,
+  createdAt: product.created_at,
+  updatedAt: product.updated_at,
+});
 
 export const createProduct = async (req, res) => {
   try {
     const { name, category } = req.body;
 
-    if (!name || !category) {
+    if (!String(name || "").trim() || !String(category || "").trim()) {
       return res.status(400).json({ message: "name and category are required" });
     }
 
-    const product = await Product.create({
-      name: String(name).trim(),
-      category: String(category).trim(),
-    });
+    const product = await createPostgresProduct(name, category);
 
-    return res.status(201).json(product);
+    return res.status(201).json(toProductResponse(product));
   } catch (error) {
     return res.status(500).json({
       message: "Failed to create product",
