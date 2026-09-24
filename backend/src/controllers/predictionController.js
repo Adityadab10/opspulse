@@ -1,14 +1,15 @@
 import mongoose from "mongoose";
 import Product from "../models/Product.js";
-import Prediction from "../models/Prediction.js";
 import { generatePredictionForProduct } from "../services/predictionService.js";
-import { getPredictionByProductId, getProductByLegacyId, getAllProducts } from "../config/postgres.js";
+import pool from "../config/database.js";
+import { getPredictionByProductId, getAllProducts, resolveProduct } from "../config/postgres.js";
 
 const ML_PREDICT_URL = process.env.ML_PREDICT_URL || "http://localhost:5002/predict";
 const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models";
 const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 10000);
 const ML_COMPARE_TIMEOUT_MS = Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000);
 const PREDICTION_CACHE_TTL_MS = Number(process.env.PREDICTION_CACHE_TTL_MS || 5 * 60 * 1000);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const predictionCache = new Map();
 const ALL_PREDICTIONS_CACHE_KEY = "all-predictions";
@@ -70,6 +71,24 @@ const toArray = (value) => {
   }
   return [value];
 };
+
+const mapPostgresPredictionToDocumentShape = (prediction) => ({
+  ...prediction,
+  productId: prediction.productId ?? prediction.product_id,
+  predictedDemand: prediction.predictedDemand ?? prediction.predicted_demand,
+  rulePrediction: prediction.rulePrediction ?? prediction.rule_prediction,
+  mlPrediction: prediction.mlPrediction ?? prediction.ml_prediction,
+  adjustedPrediction: prediction.adjustedPrediction ?? prediction.adjusted_prediction,
+  avgSales: prediction.avgSales ?? prediction.avg_sales,
+  percentChange: prediction.percentChange ?? prediction.percent_change,
+  seasonTag: prediction.seasonTag ?? prediction.season_tag,
+  sourceHeadline: prediction.sourceHeadline ?? prediction.source_headline,
+  sourceHeadlines: prediction.sourceHeadlines ?? prediction.source_headlines,
+  matchedKeywords: prediction.matchedKeywords ?? prediction.matched_keywords,
+  contributingFactors: prediction.contributingFactors ?? prediction.contributing_factors,
+  predictionSource: prediction.predictionSource ?? prediction.prediction_source,
+  predictedAt: prediction.predictedAt ?? prediction.predicted_at,
+});
 
 const isTruthy = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -295,38 +314,40 @@ const mapPredictionDocToResponse = (predictionDoc, fallbackProduct = null) => {
     return null;
   }
 
+  const doc = mapPostgresPredictionToDocumentShape(predictionDoc);
+
   const productRef =
-    predictionDoc.productId && typeof predictionDoc.productId === "object"
-      ? buildProductRef(predictionDoc.productId)
-      : buildProductRef(fallbackProduct, predictionDoc.productId);
+    doc.productId && typeof doc.productId === "object"
+      ? buildProductRef(doc.productId)
+      : buildProductRef(fallbackProduct, doc.productId);
 
   return {
     productId: productRef,
-    predictedDemand: toNumber(predictionDoc.predictedDemand, 0),
-    avgSales: toNumber(predictionDoc.avgSales, 0),
-    percentChange: toNumber(predictionDoc.percentChange, 0),
-    seasonTag: String(predictionDoc.seasonTag || "Normal"),
-    rulePrediction: toNumber(predictionDoc.rulePrediction, toNumber(predictionDoc.predictedDemand, 0)),
-    mlPrediction: toNumber(predictionDoc.mlPrediction, toNumber(predictionDoc.predictedDemand, 0)),
+    predictedDemand: toNumber(doc.predictedDemand, 0),
+    avgSales: toNumber(doc.avgSales, 0),
+    percentChange: toNumber(doc.percentChange, 0),
+    seasonTag: String(doc.seasonTag || "Normal"),
+    rulePrediction: toNumber(doc.rulePrediction, toNumber(doc.predictedDemand, 0)),
+    mlPrediction: toNumber(doc.mlPrediction, toNumber(doc.predictedDemand, 0)),
     adjustedPrediction: toNumber(
-      predictionDoc.adjustedPrediction,
-      toNumber(predictionDoc.predictedDemand, 0)
+      doc.adjustedPrediction,
+      toNumber(doc.predictedDemand, 0)
     ),
-    decision: normalizeDecision(predictionDoc.decision),
-    impact: normalizeImpact(predictionDoc.impact),
-    keyword: predictionDoc.keyword || null,
-    score: toNumber(predictionDoc.score, 0),
-    sourceHeadline: predictionDoc.sourceHeadline || null,
-    sourceHeadlines: Array.isArray(predictionDoc.sourceHeadlines) ? predictionDoc.sourceHeadlines : [],
-    matchedKeywords: Array.isArray(predictionDoc.matchedKeywords) ? predictionDoc.matchedKeywords : [],
-    confidence: normalizeConfidence(predictionDoc.confidence, "Low"),
-    reason: String(predictionDoc.reason || "No explanation available"),
-    contributingFactors: Array.isArray(predictionDoc.contributingFactors)
-      ? predictionDoc.contributingFactors
+    decision: normalizeDecision(doc.decision),
+    impact: normalizeImpact(doc.impact),
+    keyword: doc.keyword || null,
+    score: toNumber(doc.score, 0),
+    sourceHeadline: doc.sourceHeadline || null,
+    sourceHeadlines: Array.isArray(doc.sourceHeadlines) ? doc.sourceHeadlines : [],
+    matchedKeywords: Array.isArray(doc.matchedKeywords) ? doc.matchedKeywords : [],
+    confidence: normalizeConfidence(doc.confidence, "Low"),
+    reason: String(doc.reason || "No explanation available"),
+    contributingFactors: Array.isArray(doc.contributingFactors)
+      ? doc.contributingFactors
       : [],
     predictionSource:
-      predictionDoc.predictionSource === "ml" ? "ml" : "rule-based",
-    predictedAt: predictionDoc.predictedAt || predictionDoc.updatedAt || new Date(),
+      doc.predictionSource === "ml" ? "ml" : "rule-based",
+    predictedAt: doc.predictedAt || doc.updatedAt || new Date(),
   };
 };
 
@@ -501,41 +522,59 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction, mlFailu
     predictedAt: new Date(),
   };
 };
+const persistPrediction = async (productId, pgProductId, unifiedPrediction) => {
+  const { rows } = await pool.query(`
+    INSERT INTO predictions (product_id, predicted_demand, avg_sales, percent_change, confidence, season_tag, rule_prediction, ml_prediction, adjusted_prediction, decision, impact, keyword, score, source_headline, source_headlines, matched_keywords, reason, contributing_factors, prediction_source, predicted_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+    ON CONFLICT (product_id) DO UPDATE SET
+      predicted_demand = EXCLUDED.predicted_demand,
+      avg_sales = EXCLUDED.avg_sales,
+      percent_change = EXCLUDED.percent_change,
+      confidence = EXCLUDED.confidence,
+      season_tag = EXCLUDED.season_tag,
+      rule_prediction = EXCLUDED.rule_prediction,
+      ml_prediction = EXCLUDED.ml_prediction,
+      adjusted_prediction = EXCLUDED.adjusted_prediction,
+      decision = EXCLUDED.decision,
+      impact = EXCLUDED.impact,
+      keyword = EXCLUDED.keyword,
+      score = EXCLUDED.score,
+      source_headline = EXCLUDED.source_headline,
+      source_headlines = EXCLUDED.source_headlines,
+      matched_keywords = EXCLUDED.matched_keywords,
+      reason = EXCLUDED.reason,
+      contributing_factors = EXCLUDED.contributing_factors,
+      prediction_source = EXCLUDED.prediction_source,
+      predicted_at = now()
+    RETURNING id, product_id, predicted_demand, rule_prediction, ml_prediction, adjusted_prediction, avg_sales, percent_change, confidence, season_tag, decision, impact, keyword, score, source_headline, source_headlines, matched_keywords, reason, contributing_factors, prediction_source, predicted_at
+  `, [
+    pgProductId,
+    unifiedPrediction.predictedDemand,
+    unifiedPrediction.avgSales,
+    unifiedPrediction.percentChange,
+    unifiedPrediction.confidence,
+    unifiedPrediction.seasonTag,
+    unifiedPrediction.rulePrediction,
+    unifiedPrediction.mlPrediction,
+    unifiedPrediction.adjustedPrediction,
+    unifiedPrediction.decision,
+    unifiedPrediction.impact,
+    unifiedPrediction.keyword,
+    unifiedPrediction.score,
+    unifiedPrediction.sourceHeadline,
+    unifiedPrediction.sourceHeadlines,
+    unifiedPrediction.matchedKeywords,
+    unifiedPrediction.reason,
+    unifiedPrediction.contributingFactors,
+    unifiedPrediction.predictionSource,
+  ]);
 
-const persistPrediction = async (productId, unifiedPrediction) => {
-  const updatePayload = {
-    productId,
-    predictedDemand: unifiedPrediction.predictedDemand,
-    avgSales: unifiedPrediction.avgSales,
-    percentChange: unifiedPrediction.percentChange,
-    confidence: unifiedPrediction.confidence,
-    seasonTag: unifiedPrediction.seasonTag,
-    rulePrediction: unifiedPrediction.rulePrediction,
-    mlPrediction: unifiedPrediction.mlPrediction,
-    adjustedPrediction: unifiedPrediction.adjustedPrediction,
-    decision: unifiedPrediction.decision,
-    impact: unifiedPrediction.impact,
-    keyword: unifiedPrediction.keyword,
-    score: unifiedPrediction.score,
-    sourceHeadline: unifiedPrediction.sourceHeadline,
-    sourceHeadlines: unifiedPrediction.sourceHeadlines,
-    matchedKeywords: unifiedPrediction.matchedKeywords,
-    reason: unifiedPrediction.reason,
-    contributingFactors: unifiedPrediction.contributingFactors,
-    predictionSource: unifiedPrediction.predictionSource,
-    predictedAt: new Date(),
-  };
-
-  const saved = await Prediction.findOneAndUpdate(
-    { productId },
-    { $set: updatePayload },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  ).populate("productId", "name category");
+  const saved = mapPostgresPredictionToDocumentShape(rows[0]);
 
   // Auto-generate alerts based on prediction results
   await generateAlertForProduct(productId, saved);
 
-  return mapPredictionDocToResponse(saved);
+  return mapPredictionDocToResponse(saved, unifiedPrediction.productId);
 };
 
 const generateAlertForProduct = async (productId, predictionDoc) => {
@@ -604,6 +643,7 @@ const getPredictionForProduct = async ({
   product,
   forceRefresh = false,
   preloadedPrediction = null,
+  pgProductId,
 }) => {
   const productId = String(product._id);
   const cacheKey = `product:${productId}`;
@@ -658,7 +698,7 @@ const getPredictionForProduct = async ({
     mlFailure,
   });
 
-  const savedPrediction = await persistPrediction(productId, unified);
+  const savedPrediction = await persistPrediction(productId, pgProductId || productId, unified);
   setCacheValue(cacheKey, savedPrediction);
   invalidateAllPredictionsCache();
 
@@ -675,11 +715,11 @@ export const predictByProduct = async (req, res) => {
     const { productId } = req.params;
     const forceRefresh = isTruthy(req.query.refresh);
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
+    if (!mongoose.Types.ObjectId.isValid(productId) && !UUID_PATTERN.test(String(productId))) {
       return sendError(res, 400, "Invalid productId");
     }
 
-    const postgresProduct = await getProductByLegacyId(productId);
+    const postgresProduct = await resolveProduct(productId);
     if (!postgresProduct) {
       return sendError(res, 404, "Product not found");
     }
@@ -700,6 +740,7 @@ export const predictByProduct = async (req, res) => {
       product: productWithMongoId,
       forceRefresh,
       preloadedPrediction: null,
+      pgProductId: postgresProduct.id,
     });
 
     return sendSuccess(res, 200, prediction, {
@@ -748,6 +789,7 @@ export const predictAllProducts = async (req, res) => {
           product: productWithMongoId,
           forceRefresh,
           preloadedPrediction: null,
+          pgProductId: product.id,
         });
       })
     );
@@ -828,6 +870,7 @@ export const getUnifiedPredictions = async (req, res) => {
           product: productWithMongoId,
           forceRefresh,
           preloadedPrediction: null,
+          pgProductId: product.id,
         });
       })
     );
