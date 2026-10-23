@@ -6,7 +6,6 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import mongoose from 'mongoose';
 
 // Product Normalization & Dedup
 test('should normalize product name and category for dedup', function() {
@@ -119,8 +118,7 @@ test('should detect missing category', function() {
 
 // Legacy ObjectId Mapping
 test('should map MongoDB ObjectId to string for legacy tracking', function() {
-  const objId = new mongoose.Types.ObjectId();
-  const legacyId = objId.toString();
+  const legacyId = '507f1f77bcf86cd799439011';
   assert.equal(legacyId.length, 24);
   assert.equal(typeof legacyId, 'string');
 });

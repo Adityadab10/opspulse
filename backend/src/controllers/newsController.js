@@ -1,5 +1,4 @@
-import mongoose from "mongoose";
-import Product from "../models/Product.js";
+import { isProductReference, resolveProduct } from "../config/postgres.js";
 
 const ML_NEWS_INSIGHTS_URL =
   process.env.ML_NEWS_INSIGHTS_URL || "http://localhost:5002/news-insights";
@@ -109,11 +108,11 @@ export const getProductNewsInsights = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
+    if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const product = await Product.findById(productId, "name category").lean();
+    const product = await resolveProduct(productId);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }

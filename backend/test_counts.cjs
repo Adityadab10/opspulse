@@ -14,9 +14,22 @@ const runQueries = async () => {
   const testProducts = await pool.query('SELECT COUNT(*) AS cnt FROM products WHERE legacy_mongo_id = $1', ['test123']);
   console.log('Test products (legacy_mongo_id = test123):', testProducts.rows[0].cnt);
   
-  // Test migrated sales count (product_id matches UUID pattern)
-  const migratedSales = await pool.query("SELECT COUNT(*) AS cnt FROM sales WHERE product_id ~ '^[0-9a-f-]{36}$'");
-  console.log('Migrated sales (product_id matches UUID pattern):', migratedSales.rows[0].cnt);
+  // Test migrated sales through the UUID foreign key and migrated product mapping.
+  const migratedSales = await pool.query(`
+    SELECT COUNT(*) AS cnt
+    FROM sales
+    JOIN products ON products.id = sales.product_id
+    WHERE products.legacy_mongo_id ~ '^[0-9a-f]{24}$'
+  `);
+  console.log('Migrated sales (linked to migrated products):', migratedSales.rows[0].cnt);
+
+  const orphanSales = await pool.query(`
+    SELECT COUNT(*) AS cnt
+    FROM sales
+    LEFT JOIN products ON products.id = sales.product_id
+    WHERE products.id IS NULL
+  `);
+  console.log('Orphan sales (referential integrity):', orphanSales.rows[0].cnt);
   
   // Test all counts
   const allProducts = await pool.query('SELECT COUNT(*) AS cnt FROM products');

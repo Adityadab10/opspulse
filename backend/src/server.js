@@ -1,8 +1,8 @@
+import "dotenv/config";
 import express from "express";
-import mongoose from "mongoose";
-import dotenv from "dotenv";
 import cors from "cors";
 
+import pool from "./config/database.js";
 import productRoutes from "./routes/productRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
 import dashboardRoutes from "./routes/dashboardRoutes.js";
@@ -12,9 +12,6 @@ import predictionRoutes from "./routes/predictionRoutes.js";
 import newsRoutes from "./routes/newsRoutes.js";
 import { predictAllProducts, predictByProduct, comparePredictions } from "./controllers/predictionController.js";
 import { getProductIntelligence } from "./controllers/productIntelligenceController.js";
-
-
-dotenv.config();
 
 const app = express();
 
@@ -45,13 +42,17 @@ app.get("/api/predict/:productId", predictByProduct);
 // Product intelligence endpoint
 app.get("/api/products/:productId/intelligence", getProductIntelligence);
 
-// DB connection
-mongoose
-  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => {
-    console.log("MongoDB connected...");
+const startServer = async () => {
+  try {
+    await pool.query("SELECT 1");
+    console.log("PostgreSQL connected...");
     app.listen(process.env.PORT, () => {
       console.log(`Server running on port ${process.env.PORT}`);
     });
-  })
-  .catch((err) => console.error(err));
+  } catch (error) {
+    console.error("Failed to connect to PostgreSQL:", error.message);
+    process.exit(1);
+  }
+};
+
+startServer();

@@ -1,23 +1,26 @@
 /**
- * MongoDB → PostgreSQL Migration Tool
- * Phase 3 — OpsPulse Migration Engineering
- * 
+ * HISTORICAL / ARCHIVAL ONLY — not part of the OpsPulse runtime.
+ * MongoDB → PostgreSQL Migration Tool (pre-cutover dry-run)
+ *
+ * OpsPulse now uses PostgreSQL/Supabase as its only runtime data store.
+ * `mongoose` and `MONGO_URI` are no longer installed/configured in the runtime.
+ * This duplicate is retained for audit history; the maintained archived copy is
+ * `backend/legacy-mongo/migrate.js`.
+ *
  * THIS SCRIPT SUPPORTS DRY-RUN MODE ONLY.
  * It does NOT write to either database during dry-run.
- * 
- * To actual migrate, the migration execution logic would need
- * to be enabled (not part of this task).
  */
 
+import 'dotenv/config';
 import { Pool } from 'pg';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
 
 // Configuration
-const MONGODB_URI = process.env.MONGO_URI || 'mongodb+srv://sinonrodrigues1310_db_user:Qsy3l2DeGr3D5NSK@inventory-intelligence.obpf9ma.mongodb.net/?appName=Inventory-Intelligence';
+const MONGODB_URI = process.env.MONGO_URI;
 const DB_NAME = process.env.MONGO_DB_NAME || 'inventory-intelligence';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres.pcefxrhnzqlgpscnkypg:081JvmhIo9ETGwld@aws-0-ap-south-1.pooler.supabase.com:5432/postgres';
+const DATABASE_URL = process.env.DATABASE_URL;
 
 const DRY_RUN = true; // Set to false ONLY with explicit authorization
 

@@ -1,7 +1,8 @@
+import 'dotenv/config';
 import { Pool } from 'pg';
 
 const pool = new Pool({
-  connectionString: 'postgresql://postgres.pcefxrhnzqlgpscnkypg:081JvmhIo9ETGwld@aws-0-ap-south-1.pooler.supabase.com:5432/postgres'
+  connectionString: process.env.DATABASE_URL
 });
 
 async function verify() {
@@ -33,7 +34,7 @@ async function verify() {
       `);
       console.log('FKs:', fks.rows.length > 0 ? fks.rows : 'None');
       
-      constuks = await pool.query(`
+      const uniques = await pool.query(`
         SELECT u.constraint_name, u.table_name, kcu.column_name
         FROM information_schema.table_constraints u
         JOIN information_schema.key_column_usage kcu
@@ -41,14 +42,17 @@ async function verify() {
         WHERE u.table_name = '${table}'
         AND u.constraint_type = 'UNIQUE';
       `);
-      console.log('Unique:', ukuks.rows);
-      
-      constcks = await pool.query(`
-        SELECT check_clause, constraint_name
-        FROM information_schema.check_constraints
-        WHERE constraint_schema = 'public' AND table_name = '${table}';
+      console.log('Unique:', uniques.rows);
+
+      const checks = await pool.query(`
+        SELECT cc.check_clause, cc.constraint_name
+        FROM information_schema.check_constraints cc
+        JOIN information_schema.table_constraints tc
+          ON tc.constraint_name = cc.constraint_name
+         AND tc.constraint_schema = cc.constraint_schema
+        WHERE tc.table_schema = 'public' AND tc.table_name = '${table}';
       `);
-      console.log('CHECKs:', ccks.rows.length > 0 ? ccks.rows.map(x => x.check_clause) : 'None');
+      console.log('CHECKs:', checks.rows.length > 0 ? checks.rows.map(x => x.check_clause) : 'None');
       
       const idxs = await pool.query(`
         SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '${table}' ORDER BY indexname

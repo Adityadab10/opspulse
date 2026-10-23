@@ -1,4 +1,4 @@
-import Sales from "../models/Sales.js";
+import { getSalesSeriesByProductId } from "../config/postgres.js";
 import { getMonthlySeries, roundTo, detectSeasonTag, stdDev } from "../helpers/predictionHelpers.js";
 
 const getConfidenceLevel = ({ monthlySeries, trend, hasSameMonthLastYear }) => {
@@ -20,7 +20,11 @@ const getConfidenceLevel = ({ monthlySeries, trend, hasSameMonthLastYear }) => {
 };
 
 export const generatePredictionForProduct = async (productId) => {
-  const salesDocs = await Sales.find({ productId }).sort({ date: 1 }).lean();
+  const salesRows = await getSalesSeriesByProductId(productId);
+  const salesDocs = salesRows.map((row) => ({
+    date: row.sale_date,
+    quantity: Number(row.quantity || 0),
+  }));
   const monthlySeries = getMonthlySeries(salesDocs);
 
   if (!monthlySeries.length) {

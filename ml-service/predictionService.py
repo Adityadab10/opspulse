@@ -6,7 +6,7 @@ import pandas as pd
 from joblib import load
 from prophet import Prophet
 
-from mongoService import get_product_name, get_sales_data
+from postgresService import get_product_name, get_sales_data
 from newsFetcher import fetch_product_news
 from newsService import analyze_news
 
@@ -264,7 +264,7 @@ def _predict_decision_and_confidence(bundle, features):
 def predict_demand(product_id: str, news_text: str = ""):
     """
     Unified decision pipeline:
-    1) fetch sales data from MongoDB
+    1) fetch sales data from PostgreSQL
     2) generate Prophet forecast
     3) analyze external news signal
     4) adjust forecast based on signal

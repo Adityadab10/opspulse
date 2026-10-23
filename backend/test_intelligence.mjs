@@ -1,6 +1,8 @@
 import { Pool } from 'pg';
 import fs from 'fs';
 
+const RECENT_DAYS = 30;
+
 const txt = fs.readFileSync('./.env', 'utf8');
 const env = {};
 txt.split('\n').forEach(line => { const idx = line.indexOf('='); if (idx > 0) { env[line.substring(0, idx)] = line.substring(idx + 1); } });
@@ -105,8 +107,6 @@ const getProductIntelligence = async (productId) => {
 
       // Calculate trend: recent period (last 30 days) vs previous comparable period
       const now = new Date();
-      const recentPeriodDays = 30;
-
       const recentQty = sortedSales
         .filter((s) => {
           const saleDate = new Date(s.sale_date);
@@ -223,7 +223,7 @@ const getProductIntelligence = async (productId) => {
 // Test with a migrated product ID (Almonds)
 const testProductId = 'f4b5c41b-96fb-4ba0-a4d3-680ec44f47a5';
 
-getProductIntelligence(testProductId).then(result => {
+getProductIntelligence(testProductId).then(async result => {
   if (result.status === 200) {
     console.log('SUCCESS: Product intelligence retrieved');
     console.log('Product:', result.data.product.name);
@@ -240,4 +240,9 @@ getProductIntelligence(testProductId).then(result => {
   } else {
     console.log('Error:', result.error);
   }
-}).then(() => process.exit(0)).catch(e => { console.error('Fatal error:', e.message); process.exit(1); });
+  await pool.end();
+}).then(() => process.exitCode = 0).catch(async e => {
+  console.error('Fatal error:', e.message);
+  await pool.end();
+  process.exitCode = 1;
+});

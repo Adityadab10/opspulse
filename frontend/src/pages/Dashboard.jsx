@@ -325,19 +325,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  const loadProductIntelligence = useCallback(async (productId) => {
-    try {
-      setProductIntelligence(null);
-      setSelectedProductId(productId);
-
-      const res = await productIntelligenceApi.getProductIntelligence(productId);
-      setProductIntelligence(res.data || null);
-    } catch (err) {
-      console.error("Product intelligence fetch error:", err);
-      setProductIntelligence(null);
-    }
-  }, []);
-
   const loadPredictions = useCallback(async ({ forceRefresh = false } = {}) => {
     try {
       setPredictionsLoading(true);

@@ -7,8 +7,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
-from bson import ObjectId
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
 # Load environment variables
 load_dotenv()
@@ -21,53 +21,53 @@ CORS(app)
 # Import prediction function
 try:
     from predictionService import predict_demand
-    print("✅ predictionService imported successfully")
+    print("[ok] predictionService imported successfully")
 except Exception as e:
-    print("❌ Error importing predictionService:", str(e))
+    print("[error] Error importing predictionService:", str(e))
     predict_demand = None
 
 try:
     from arimaService import compare_arima_prophet
-    print("✅ arimaService imported successfully")
+    print("[ok] arimaService imported successfully")
 except Exception as e:
-    print("❌ Error importing arimaService:", str(e))
+    print("[error] Error importing arimaService:", str(e))
     compare_arima_prophet = None
 
 try:
-    from mongoService import get_db_diagnostics, get_raw_sales_data
-    print("✅ mongoService imported successfully")
+    from postgresService import get_db_diagnostics, get_raw_sales_data
+    print("[ok] postgresService imported successfully")
 except Exception as e:
-    print("❌ Error importing mongoService:", str(e))
+    print("[error] Error importing postgresService:", str(e))
     get_db_diagnostics = None
     get_raw_sales_data = None
 
 try:
     from newsFetcher import fetch_product_news
-    print("✅ newsFetcher imported successfully")
+    print("[ok] newsFetcher imported successfully")
 except Exception as e:
-    print("❌ Error importing newsFetcher:", str(e))
+    print("[error] Error importing newsFetcher:", str(e))
     fetch_product_news = None
 
 try:
     from newsScraper import scrape_google_news_headlines
-    print("✅ newsScraper imported successfully")
+    print("[ok] newsScraper imported successfully")
 except Exception as e:
-    print("❌ Error importing newsScraper:", str(e))
+    print("[error] Error importing newsScraper:", str(e))
     scrape_google_news_headlines = None
 
 try:
     from newsService import analyze_news
-    print("✅ newsService imported successfully")
+    print("[ok] newsService imported successfully")
 except Exception as e:
-    print("❌ Error importing newsService:", str(e))
+    print("[error] Error importing newsService:", str(e))
     analyze_news = None
 
 
 def _serialize_for_json(value):
-    if isinstance(value, ObjectId):
-        return str(value)
-    if isinstance(value, datetime):
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, dict):
         return {k: _serialize_for_json(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -79,10 +79,10 @@ def _serialize_for_json(value):
 
 @app.route("/test", methods=["GET"])
 def test():
-    diagnostics = get_db_diagnostics() if get_db_diagnostics else {"error": "mongoService unavailable"}
+    diagnostics = get_db_diagnostics() if get_db_diagnostics else {"error": "postgresService unavailable"}
     return jsonify({
         "message": "ML service running",
-        "mongo": diagnostics,
+        "database": diagnostics,
     }), 200
 
 
@@ -91,7 +91,7 @@ def debug_sales(product_id):
     print(f"\n--- /debug-sales/{product_id} endpoint was called ---")
 
     if get_raw_sales_data is None:
-        return jsonify({"error": "mongoService not available"}), 503
+        return jsonify({"error": "postgresService not available"}), 503
 
     try:
         docs, query, normalized = get_raw_sales_data(product_id)
@@ -329,6 +329,6 @@ def print_routes():
 if __name__ == "__main__":
     print_routes()
     if get_db_diagnostics:
-        print("[startup] Mongo diagnostics:", get_db_diagnostics())
-    print("🚀 ML Service running on http://localhost:5002")
+        print("[startup] PostgreSQL diagnostics:", get_db_diagnostics())
+    print("ML Service running on http://localhost:5002")
     app.run(host="0.0.0.0", port=5002, debug=True)

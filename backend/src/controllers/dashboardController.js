@@ -1,5 +1,11 @@
 import { roundTo, calculatePercentChange } from "../helpers/analytics.js";
-import pool, { getMigratedSalesSummary } from "../config/postgres.js";
+import {
+  countAllActiveAlerts,
+  countProducts,
+  getAllProducts,
+  getAllSales,
+  getProductById,
+} from "../config/postgres.js";
 
 const computeTrend = (salesDocs, recentDays = 30) => {
   if (!salesDocs || salesDocs.length === 0) {
@@ -42,7 +48,7 @@ const computeTrend = (salesDocs, recentDays = 30) => {
 const getSummary = async (req, res) => {
   try {
     const [totalProductsResult, activeAlertsResult, allSales] = await Promise.all([
-      countMigratedProducts(),
+      countProducts(),
       countAllActiveAlerts(),
       getAllSales(),
     ]);
@@ -106,44 +112,25 @@ const getSummary = async (req, res) => {
       topDecreasing.push(...allSorted.filter((p) => p.trendDirection !== "increasing"));
     }
 
-    const topIncreasingProducts = topIncreasing.map((r) => {
-      const product = await pool.query('SELECT id, name, category, legacy_mongo_id FROM products WHERE id = $1', [r.productId]);
-      const prod = product.rows[0];
-      if (!prod || prod.legacy_mongo_id === 'test123') {
-        return {
-          name: "Unknown Product",
-          quantity: r.totalQty,
-          percentChange: r.percentChange,
-          trendDirection: r.trendDirection,
-        };
-      }
+    const topIncreasingProducts = await Promise.all(topIncreasing.map(async (r) => {
+      const prod = await getProductById(r.productId);
       return {
-        name: prod.name,
+        name: prod?.name || "Unknown Product",
         quantity: r.totalQty,
         percentChange: r.percentChange,
         trendDirection: r.trendDirection,
       };
-    });
+    }));
 
-    const topDecreasingProducts = topDecreasing.map((r) => {
-      const product = await pool.query('SELECT id, name, category, legacy_mongo_id FROM products WHERE id = $1', [r.productId]);
-      const productRows = product.rows;
-      const prod = productRows.length > 0 ? productRows[0] : null;
-      if (!prod || prod.legacy_mongo_id === 'test123') {
-        return {
-          name: "Unknown Product",
-          quantity: r.totalQty,
-          percentChange: r.percentChange,
-          trendDirection: r.trendDirection,
-        };
-      }
+    const topDecreasingProducts = await Promise.all(topDecreasing.map(async (r) => {
+      const prod = await getProductById(r.productId);
       return {
-        name: prod.name,
+        name: prod?.name || "Unknown Product",
         quantity: r.totalQty,
         percentChange: r.percentChange,
         trendDirection: r.trendDirection,
       };
-    });
+    }));
 
     return res.status(200).json({
       totalProducts,
@@ -207,19 +194,9 @@ const getTrends = async (req, res) => {
 
     // Get product names for all product IDs
     const productIds = [...productMonthMap.keys()];
-    const productNameMap = new Map();
-    if (productIds.length > 0) {
-      const placeholders = productIds.map((_, i) => `$${i + 1}`).join(',');
-      const result = await pool.query(
-        `SELECT id, name, category, legacy_mongo_id FROM products WHERE id IN (${placeholders})`,
-        productIds
-      );
-      result.rows.forEach(p => {
-        if (p.legacy_mongo_id !== 'test123') {
-          productNameMap.set(p.id, p.name);
-        }
-      });
-    }
+    const productNameMap = new Map(
+      (await getAllProducts()).map((product) => [product.id, product.name]),
+    );
 
     // Build response rows
     const response = productIds.map((productId) => {
@@ -229,10 +206,8 @@ const getTrends = async (req, res) => {
       return { product: name, data };
     });
 
-    // Demand trend summary - total and average from migrated sales only
-    const migratedSalesSummary = await getMigratedSalesSummary();
-    const totalQuantity = migratedSalesSummary.totalQuantity;
-    const recordCount = migratedSalesSummary.recordCount;
+    const totalQuantity = allSales.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
+    const recordCount = allSales.length;
 
     const demandTrendSummary = {
       totalSales: totalQuantity,

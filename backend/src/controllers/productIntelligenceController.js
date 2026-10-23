@@ -1,4 +1,11 @@
 import { roundTo, calculatePercentChange } from "../helpers/analytics.js";
+import {
+  getActiveAlertsByProductId,
+  getPredictionByProductId,
+  getSalesByProductId,
+  isProductReference,
+  resolveProduct,
+} from "../config/postgres.js";
 
 const RECENT_DAYS = 30;
 
@@ -6,27 +13,17 @@ const getProductIntelligence = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    // Check if productId is a valid UUID format
-    const uuidPattern = /^[0-9a-f-]{36}$/i;
-    if (!uuidPattern.test(productId)) {
+    if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    // Look up product from PostgreSQL
-    const product = await getProductById(productId);
+    const product = await resolveProduct(productId);
 
-    // If product not found or is a test record (legacy_mongo_id = 'test123'), return 404
-    if (!product) {
+    if (!product || product.legacy_mongo_id === 'test123') {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // Filter out test products (legacy_mongo_id = 'test123')
-    if (product.legacy_mongo_id === 'test123') {
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    // Get sales records for this product from PostgreSQL, sorted by date
-    const salesDocs = await getSalesByProductId(productId);
+    const salesDocs = await getSalesByProductId(product.id);
 
     // Calculate historical demand data
     let historicalSales = [];
@@ -105,7 +102,7 @@ const getProductIntelligence = async (req, res) => {
     }
 
     // Get the latest prediction from PostgreSQL
-    const predictionDoc = await getPredictionByProductId(productId);
+    const predictionDoc = await getPredictionByProductId(product.id);
 
     let forecast = {
       predictedDemand: 0,
@@ -140,7 +137,7 @@ const getProductIntelligence = async (req, res) => {
     }
 
     // Get active alerts for this product from PostgreSQL
-    const activeAlerts = await getActiveAlertsByProductId(productId);
+    const activeAlerts = await getActiveAlertsByProductId(product.id);
 
     // Build response
     const intelligence = {
@@ -162,7 +159,7 @@ const getProductIntelligence = async (req, res) => {
         type: a.type,
         message: a.message,
         severity: a.severity,
-        percentChange: a.percentChange,
+        percentChange: a.percent_change,
       })),
     };
 

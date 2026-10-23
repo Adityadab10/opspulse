@@ -1,5 +1,9 @@
 /**
+ * ARCHIVAL ONLY — not part of the OpsPulse runtime.
  * One-time MongoDB -> PostgreSQL migration.
+ *
+ * OpsPulse now uses PostgreSQL/Supabase as its only runtime data store.
+ * `mongoose` and `MONGO_URI` are not installed/configured at runtime.
  *
  * DRY_RUN defaults to true. In dry-run mode this script performs only MongoDB
  * reads and PostgreSQL SELECT queries; it never starts a write transaction.
@@ -10,10 +14,10 @@ import { Pool } from 'pg';
 import mongoose from 'mongoose';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Product from '../../src/models/Product.js';
-import Sales from '../../src/models/Sales.js';
-import Prediction from '../../src/models/Prediction.js';
-import Alert from '../../src/models/Alert.js';
+import Product from './models/Product.js';
+import Sales from './models/Sales.js';
+import Prediction from './models/Prediction.js';
+import Alert from './models/Alert.js';
 
 const DRY_RUN = (process.env.DRY_RUN ?? 'true').trim().toLowerCase() !== 'false';
 const UTC_MIDNIGHT_SUFFIX = 'T00:00:00.000Z';

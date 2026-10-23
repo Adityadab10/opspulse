@@ -1,15 +1,17 @@
 /**
- * MongoDB → PostgreSQL Migration Validation
+ * ARCHIVAL ONLY — not part of the OpsPulse runtime.
+ * MongoDB -> PostgreSQL Migration Validation
  * Validates that migration completed correctly by comparing source and target counts
  * and checking field-level consistency.
  */
 
+import 'dotenv/config';
 import { Pool } from 'pg';
 import mongoose from 'mongoose';
 
-const MONGODB_URI = process.env.MONGO_URI || 'mongodb+srv://sinonrodrigues1310_db_user:Qsy3l2DeGr3D5NSK@inventory-intelligence.obpf9ma.mongodb.net/?appName=Inventory-Intelligence';
+const MONGODB_URI = process.env.MONGO_URI;
 const DB_NAME = process.env.MONGO_DB_NAME || 'inventory-intelligence';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres.pcefxrhnzqlgpscnkypg:081JvmhIo9ETGwld@aws-0-ap-south-1.pooler.supabase.com:5432/postgres';
+const DATABASE_URL = process.env.DATABASE_URL;
 
 const DRY_RUN = true;
 

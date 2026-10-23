@@ -1,5 +1,13 @@
 ## Phase 4 — MongoDB → PostgreSQL Migration DRY-RUN REPORT
 
+> **Historical document — superseded by the PostgreSQL cutover.**
+> OpsPulse no longer uses MongoDB at runtime. PostgreSQL/Supabase is the only runtime
+> data store, Mongoose was removed from the backend and ML service, and the migration
+> scripts are archived under `backend/legacy-mongo/`. The counts and warnings below
+> describe the pre-cutover dry run, not current production state. Post-cutover, the one
+> missing alert was preserved with its original timestamp and the archived Mongoose
+> defaults (`severity=MEDIUM`, `is_active=true`).
+
 **Objective**: Validate migration tooling and analyze actual MongoDB source data in read-only dry-run mode.
 
 **Environment**: MongoDB Atlas cluster resumed, PostgreSQL/Supabase connected.
@@ -9,7 +17,7 @@
 
 ### 1. MongoDB Connectivity
 - **Status**: ✅ Connected
-- **URI**: `mongodb+srv://sinonrodrigues1310_db_user:Qsy3l2DeGr3D5NSK@inventory-intelligence.obpf9ma.mongodb.net/?appName=Inventory-Intelligence`
+- **URI**: `<redacted>`
 - **Database**: `inventory-intelligence`
 - **Cluster**: ENOTFOUND issue resolved — Atlas cluster now reachable
 

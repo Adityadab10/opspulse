@@ -6,7 +6,7 @@ from prophet import Prophet
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from statsmodels.tsa.arima.model import ARIMA
 
-from mongoService import get_sales_data
+from postgresService import get_sales_data
 
 
 DEFAULT_ARIMA_ORDER = (1, 1, 1)
@@ -116,7 +116,7 @@ def compare_arima_prophet(product_id: str) -> Dict[str, object]:
     df = _prepare_sales_dataframe(docs)
     print("[arima] prepared dataframe rows:", len(df))
 
-    quantity_series = pd.Series(df["y"].values, index=df["ds"])
+    quantity_series = pd.Series(df["y"].to_numpy())
     print("[arima] quantity series length:", len(quantity_series))
 
     train_series, test_series = _train_test_split_series(quantity_series)
@@ -124,8 +124,8 @@ def compare_arima_prophet(product_id: str) -> Dict[str, object]:
 
     print("[arima] train size:", len(train_series))
     print("[arima] test size:", test_size)
-    print("[arima] train range:", train_series.index.min(), "->", train_series.index.max())
-    print("[arima] test range:", test_series.index.min(), "->", test_series.index.max())
+    print("[arima] train range:", df["ds"].iloc[0], "->", df["ds"].iloc[len(train_series) - 1])
+    print("[arima] test range:", df["ds"].iloc[len(train_series)], "->", df["ds"].iloc[-1])
 
     train_df = df.iloc[: len(train_series)][["ds", "y"]]
 

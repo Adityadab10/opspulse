@@ -1,5 +1,4 @@
-import Product from "../models/Product.js";
-import { createProduct as createPostgresProduct } from "../config/postgres.js";
+import { createProduct as createPostgresProduct, getAllProducts as getPostgresProducts } from "../config/postgres.js";
 
 const toProductResponse = (product) => ({
   _id: product.id,
@@ -32,8 +31,8 @@ export const createProduct = async (req, res) => {
 
 export const getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 });
-    return res.status(200).json(products);
+    const products = await getPostgresProducts("created_at");
+    return res.status(200).json(products.map(toProductResponse));
   } catch (error) {
     return res.status(500).json({
       message: "Failed to fetch products",

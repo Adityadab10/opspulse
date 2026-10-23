@@ -1,18 +1,14 @@
-import mongoose from "mongoose";
-import Product from "../models/Product.js";
-import Sales from "../models/Sales.js";
-import { insertSale } from "../config/postgres.js";
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { insertSale, isProductReference, resolveProduct, getSalesByProductId } from "../config/postgres.js";
 
 const toSalesResponse = ({ sale, product }) => ({
   _id: sale.id,
   id: sale.id,
   productId: {
-    _id: product.legacy_mongo_id || product.id,
+    _id: product.id,
     id: product.id,
     name: product.name,
     category: product.category,
+    legacyMongoId: product.legacy_mongo_id,
   },
   date: sale.sale_date,
   quantity: sale.quantity,
@@ -29,7 +25,7 @@ export const addSales = async (req, res) => {
       });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(productId) && !UUID_PATTERN.test(String(productId))) {
+    if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
@@ -59,20 +55,32 @@ export const getSalesByProduct = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
+    if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const productExists = await Product.exists({ _id: productId });
-    if (!productExists) {
+    const product = await resolveProduct(productId);
+    if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const sales = await Sales.find({ productId })
-      .sort({ date: -1 })
-      .populate("productId", "name category");
+    const sales = await getSalesByProductId(product.id);
+    const response = sales.map((sale) => ({
+      _id: sale.id,
+      id: sale.id,
+      productId: {
+        _id: product.id,
+        id: product.id,
+        name: product.name,
+        category: product.category,
+        legacyMongoId: product.legacy_mongo_id,
+      },
+      date: sale.sale_date,
+      quantity: sale.quantity,
+      createdAt: sale.created_at,
+    }));
 
-    return res.status(200).json(sales);
+    return res.status(200).json(response);
   } catch (error) {
     return res.status(500).json({
       message: "Failed to fetch sales by product",

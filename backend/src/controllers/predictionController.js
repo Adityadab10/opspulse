@@ -1,15 +1,20 @@
-import mongoose from "mongoose";
-import Product from "../models/Product.js";
 import { generatePredictionForProduct } from "../services/predictionService.js";
 import pool from "../config/database.js";
-import { getPredictionByProductId, getAllProducts, resolveProduct } from "../config/postgres.js";
+import {
+  deleteActiveAlertsForProduct,
+  getPredictionByProductId,
+  getAllProducts,
+  isProductReference,
+  resolveProduct,
+  upsertAlertByProductAndType,
+} from "../config/postgres.js";
 
 const ML_PREDICT_URL = process.env.ML_PREDICT_URL || "http://localhost:5002/predict";
 const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models";
 const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 10000);
 const ML_COMPARE_TIMEOUT_MS = Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000);
+const ML_COMPARE_CONCURRENCY = Math.max(1, Number(process.env.ML_COMPARE_CONCURRENCY || 4));
 const PREDICTION_CACHE_TTL_MS = Number(process.env.PREDICTION_CACHE_TTL_MS || 5 * 60 * 1000);
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const predictionCache = new Map();
 const ALL_PREDICTIONS_CACHE_KEY = "all-predictions";
@@ -55,6 +60,30 @@ const sendError = (res, statusCode, message, details = null) => {
       details,
     },
   });
+};
+
+const settleWithConcurrency = async (items, worker, concurrency) => {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+
+      try {
+        results[index] = { status: "fulfilled", value: await worker(items[index]) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => runWorker()),
+  );
+
+  return results;
 };
 
 const toNumber = (value, fallback = 0) => {
@@ -235,7 +264,7 @@ const classifyMlFailure = (error) => {
 const buildProductRef = (product, fallbackProductId = null) => {
   const resolvedProductId =
     product && typeof product === "object"
-      ? product._id || product.id || product.productId || fallbackProductId
+      ? product.id || product._id || product.productId || fallbackProductId
       : fallbackProductId;
 
   return {
@@ -445,7 +474,7 @@ const normalizeComparisonPayload = (payload, product) => {
   const actualValues = payload?.actualValues ?? payload?.actual_values;
 
   return {
-    productId: String(product?._id || payload?.productId || ""),
+    productId: String(product?.id || product?._id || payload?.productId || ""),
     productName: product?.name || payload?.productName || "Unknown Product",
     category: product?.category || payload?.category || "Uncategorized",
     prophetPrediction: toArray(prophetPrediction),
@@ -589,7 +618,7 @@ const generateAlertForProduct = async (productId, predictionDoc) => {
 
   if (!significantChange && !meaningfulConfidence) {
     // Clear any existing alerts if the situation has normalized
-    await Alert.deleteMany({ productId, isActive: true });
+    await deleteActiveAlertsForProduct(productId);
     return;
   }
 
@@ -622,21 +651,18 @@ const generateAlertForProduct = async (productId, predictionDoc) => {
     severity = "LOW";
   } else {
     // Clear alerts if no significant condition met
-    await Alert.deleteMany({ productId, isActive: true });
+    await deleteActiveAlertsForProduct(productId);
     return;
   }
 
   // Upsert the alert (matching on productId + type)
-  await Alert.findOneAndUpdate(
-    { productId, type },
-    {
+  await upsertAlertByProductAndType(productId, {
+    type,
       message,
       severity,
       percentChange,
       isActive: true,
-    },
-    { upsert: true, new: true }
-  );
+  });
 };
 
 const getPredictionForProduct = async ({
@@ -645,7 +671,7 @@ const getPredictionForProduct = async ({
   preloadedPrediction = null,
   pgProductId,
 }) => {
-  const productId = String(product._id);
+  const productId = String(product.id || product._id);
   const cacheKey = `product:${productId}`;
 
   if (!forceRefresh) {
@@ -715,7 +741,7 @@ export const predictByProduct = async (req, res) => {
     const { productId } = req.params;
     const forceRefresh = isTruthy(req.query.refresh);
 
-    if (!mongoose.Types.ObjectId.isValid(productId) && !UUID_PATTERN.test(String(productId))) {
+    if (!isProductReference(productId)) {
       return sendError(res, 400, "Invalid productId");
     }
 
@@ -727,17 +753,15 @@ export const predictByProduct = async (req, res) => {
     const predictionFromPg = await getPredictionByProductId(postgresProduct.id);
 
     if (predictionFromPg) {
-      const productWithMongoId = { ...postgresProduct, _id: postgresProduct.legacy_mongo_id };
-      const prediction = mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+      const prediction = mapPredictionDocToResponse(predictionFromPg, postgresProduct);
       return sendSuccess(res, 200, prediction, {
         cached: !forceRefresh,
         cacheTtlMs: PREDICTION_CACHE_TTL_MS,
       });
     }
 
-    const productWithMongoId = { ...postgresProduct, _id: postgresProduct.legacy_mongo_id };
     const prediction = await getPredictionForProduct({
-      product: productWithMongoId,
+      product: postgresProduct,
       forceRefresh,
       preloadedPrediction: null,
       pgProductId: postgresProduct.id,
@@ -778,15 +802,14 @@ export const predictAllProducts = async (req, res) => {
 
     const settled = await Promise.allSettled(
       products.map(async (product) => {
-        const productWithMongoId = { ...product, _id: product.legacy_mongo_id };
         const predictionFromPg = await getPredictionByProductId(product.id);
 
         if (predictionFromPg) {
-          return mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+          return mapPredictionDocToResponse(predictionFromPg, product);
         }
 
         return getPredictionForProduct({
-          product: productWithMongoId,
+          product,
           forceRefresh,
           preloadedPrediction: null,
           pgProductId: product.id,
@@ -859,15 +882,14 @@ export const getUnifiedPredictions = async (req, res) => {
 
     const settled = await Promise.allSettled(
       products.map(async (product) => {
-        const productWithMongoId = { ...product, _id: product.legacy_mongo_id };
         const predictionFromPg = await getPredictionByProductId(product.id);
 
         if (predictionFromPg) {
-          return mapPredictionDocToResponse(predictionFromPg, productWithMongoId);
+          return mapPredictionDocToResponse(predictionFromPg, product);
         }
 
         return getPredictionForProduct({
-          product: productWithMongoId,
+          product,
           forceRefresh,
           preloadedPrediction: null,
           pgProductId: product.id,
@@ -903,17 +925,19 @@ export const getUnifiedPredictions = async (req, res) => {
 
 export const comparePredictions = async (req, res) => {
   try {
-    const products = await Product.find({}, "_id name category").lean();
+    const products = await getAllProducts();
 
     if (!products.length) {
       return res.status(200).json([]);
     }
 
-    const settled = await Promise.allSettled(
-      products.map(async (product) => {
-        const comparison = await callMlComparison(product._id);
+    const settled = await settleWithConcurrency(
+      products,
+      async (product) => {
+        const comparison = await callMlComparison(product.id);
         return normalizeComparisonPayload(comparison, product);
-      })
+      },
+      ML_COMPARE_CONCURRENCY,
     );
 
     const comparisons = settled

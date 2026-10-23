@@ -1,7 +1,25 @@
-import mongoose from "mongoose";
-import Alert from "../models/Alert.js";
-import Product from "../models/Product.js";
-import { getRecentActiveAlerts } from "../config/postgres.js";
+import {
+  createAlert as createPostgresAlert,
+  deactivateAlertById,
+  getRecentActiveAlerts,
+  isProductReference,
+} from "../config/postgres.js";
+
+const mapCreatedAlert = ({ alert, product }) => ({
+  _id: alert.id,
+  productId: {
+    _id: product.id,
+    id: product.id,
+    name: product.name,
+    category: product.category,
+  },
+  type: alert.type,
+  message: alert.message,
+  severity: alert.severity,
+  percentChange: alert.percent_change || 0,
+  isActive: alert.is_active,
+  createdAt: alert.created_at,
+});
 
 // GET latest active alerts
 export const getAlerts = async (req, res) => {
@@ -43,18 +61,11 @@ export const createAlert = async (req, res) => {
       });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
+    if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const productExists = await Product.exists({ _id: productId });
-    if (!productExists) {
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    // Create alert
-    const created = await Alert.create({
-      productId,
+    const created = await createPostgresAlert(productId, {
       type,
       message: String(message).trim(),
       severity: severity || "MEDIUM",
@@ -62,9 +73,11 @@ export const createAlert = async (req, res) => {
       isActive: true,
     });
 
-    const populated = await created.populate("productId", "name category");
+    if (!created) {
+      return res.status(404).json({ message: "Product not found" });
+    }
 
-    return res.status(201).json(populated);
+    return res.status(201).json(mapCreatedAlert(created));
   } catch (error) {
     return res.status(500).json({
       message: "Failed to create alert",
@@ -78,17 +91,25 @@ export const deactivateAlert = async (req, res) => {
   try {
     const { alertId } = req.params;
 
-    const alert = await Alert.findByIdAndUpdate(
-      alertId,
-      { isActive: false },
-      { new: true }
-    );
+    const alert = await deactivateAlertById(alertId);
 
     if (!alert) {
       return res.status(404).json({ message: "Alert not found" });
     }
 
-    return res.status(200).json({ message: "Alert deactivated", alert });
+    return res.status(200).json({
+      message: "Alert deactivated",
+      alert: {
+        _id: alert.id,
+        productId: alert.product_id,
+        type: alert.type,
+        message: alert.message,
+        severity: alert.severity,
+        percentChange: alert.percent_change || 0,
+        isActive: alert.is_active,
+        createdAt: alert.created_at,
+      },
+    });
   } catch (error) {
     return res.status(500).json({
       message: "Failed to deactivate alert",
