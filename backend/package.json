@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "node --test db/scripts/tests.js"
+    "test": "node --test db/scripts/tests.js src/middleware/firebaseAuth.test.js src/controllers/aiAnalystController.test.js src/controllers/predictionController.test.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +17,7 @@
     "csv-parser": "^3.2.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
+    "firebase-admin": "^13.10.0",
     "multer": "^2.1.1",
     "pg": "^8.23.0"
   },

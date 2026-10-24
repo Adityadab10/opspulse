@@ -48,4 +48,12 @@ export const uploadApi = {
   },
 };
 
+export const aiAnalystApi = {
+  ask: (question, authorization) =>
+    api.post("/ai-analyst", { question }, {
+      headers: authorization ? { Authorization: authorization } : undefined,
+      timeout: 30000,
+    }),
+};
+
 export default api;

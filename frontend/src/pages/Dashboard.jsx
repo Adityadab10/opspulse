@@ -18,6 +18,7 @@ import NewsPanel from "../components/NewsPanel";
 import AlertList from "../components/AlertList";
 import ComparisonModal from "../components/ComparisonModal";
 import ForecastComparisonChart from "../components/ForecastComparisonChart";
+import AiAnalystPanel from "../components/AiAnalystPanel";
 import { alertsApi, comparisonApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
 
 const mergeAnalysisWithProducts = (analysisRows, products) => {
@@ -729,6 +730,8 @@ export default function Dashboard() {
           <KPIcard title="Active Alerts" value={summary.activeAlerts ?? 0} />
           <KPIcard title="Recommendations Ready" value={summary.recommendationsReady ?? 0} />
         </section>
+
+        <AiAnalystPanel />
 
         <section id="news-insights" className="glass rounded-2xl p-6 transition-all hover:border-cyan-500/40">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

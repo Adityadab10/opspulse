@@ -1,5 +1,5 @@
-flask
-flask-cors
+fastapi
+uvicorn
 python-dotenv
 psycopg2-binary
 pandas

@@ -10,6 +10,7 @@ import alertRoutes from "./routes/alertRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import predictionRoutes from "./routes/predictionRoutes.js";
 import newsRoutes from "./routes/newsRoutes.js";
+import aiAnalystRoutes from "./routes/aiAnalystRoutes.js";
 import { predictAllProducts, predictByProduct, comparePredictions } from "./controllers/predictionController.js";
 import { getProductIntelligence } from "./controllers/productIntelligenceController.js";
 
@@ -32,6 +33,7 @@ app.use("/api/alerts", alertRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/predictions", predictionRoutes);
 app.use("/api/news", newsRoutes);
+app.use("/api/ai-analyst", aiAnalystRoutes);
 app.post("/api/predict-all", predictAllProducts);
 app.get("/api/compare-predictions", comparePredictions);
 

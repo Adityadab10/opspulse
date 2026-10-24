@@ -7,7 +7,7 @@ from predictionService import predict_demand
 import sys
 
 
-def test_prediction(product_id):
+def run_prediction_test(product_id):
     """Test prediction for a given product ID."""
     print("\n" + "="*60)
     print(f"Testing Prophet Prediction for Product ID: {product_id}")
@@ -49,7 +49,7 @@ if __name__ == "__main__":
     
     results = []
     for product_id in test_products:
-        success = test_prediction(product_id)
+        success = run_prediction_test(product_id)
         results.append((product_id, success))
     
     # Summary

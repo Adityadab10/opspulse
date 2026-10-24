@@ -14,6 +14,7 @@ const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/comp
 const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 10000);
 const ML_COMPARE_TIMEOUT_MS = Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000);
 const ML_COMPARE_CONCURRENCY = Math.max(1, Number(process.env.ML_COMPARE_CONCURRENCY || 4));
+const ML_PREDICTION_CONCURRENCY = Math.max(1, Number(process.env.ML_PREDICTION_CONCURRENCY || 4));
 const PREDICTION_CACHE_TTL_MS = Number(process.env.PREDICTION_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const predictionCache = new Map();
@@ -800,8 +801,9 @@ export const predictAllProducts = async (req, res) => {
       );
     }
 
-    const settled = await Promise.allSettled(
-      products.map(async (product) => {
+    const settled = await settleWithConcurrency(
+      products,
+      async (product) => {
         const predictionFromPg = await getPredictionByProductId(product.id);
 
         if (predictionFromPg) {
@@ -814,7 +816,8 @@ export const predictAllProducts = async (req, res) => {
           preloadedPrediction: null,
           pgProductId: product.id,
         });
-      })
+      },
+      ML_PREDICTION_CONCURRENCY,
     );
 
     const predictions = settled
@@ -880,8 +883,9 @@ export const getUnifiedPredictions = async (req, res) => {
       });
     }
 
-    const settled = await Promise.allSettled(
-      products.map(async (product) => {
+    const settled = await settleWithConcurrency(
+      products,
+      async (product) => {
         const predictionFromPg = await getPredictionByProductId(product.id);
 
         if (predictionFromPg) {
@@ -894,7 +898,8 @@ export const getUnifiedPredictions = async (req, res) => {
           preloadedPrediction: null,
           pgProductId: product.id,
         });
-      })
+      },
+      ML_PREDICTION_CONCURRENCY,
     );
 
     const unifiedPredictions = settled
@@ -975,3 +980,5 @@ export const comparePredictions = async (req, res) => {
     });
   }
 };
+
+export { settleWithConcurrency };
