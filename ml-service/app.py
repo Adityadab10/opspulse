@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -22,6 +22,16 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from rag_provider import ProviderUnavailable
 from rag_service import answer_question
+from security import (
+    INTERNAL_TOKEN_HEADER,
+    TENANT_ID_HEADER,
+    USER_ID_HEADER,
+    CORRELATION_ID_HEADER,
+    TrustedContext,
+    require_trusted_context,
+)
+from tools import ToolNotFoundError, ToolPermissionError, default_registry
+from workflow import build_minimal_graph, run_minimal_pipeline
 
 try:
     from predictionService import predict_demand
@@ -76,6 +86,22 @@ class NewsInsightsRequest(BaseModel):
 
 class AnalystRequest(BaseModel):
     question: str
+
+
+class ExecuteToolRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    tool_name: str
+    agent_name: str
+    parameters: dict[str, Any] = {}
+
+
+class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    question: str
+    thread_id: Optional[str] = None
+    run_id: Optional[str] = None
 
 
 app = FastAPI(title="OpsPulse ML Service")
@@ -393,6 +419,11 @@ async def ai_analyst(request: Request):
         return _json_response({"error": "question is required"}, 400)
     if len(question) > 1000:
         return _json_response({"error": "question must be 1000 characters or fewer"}, 400)
+
+    # Optional caller identity context from Node
+    tenant_id = request.headers.get("x-tenant-id", "").strip() or "default"
+    user_id = request.headers.get("x-user-id", "").strip() or "anonymous"
+
     try:
         return _json_response(await run_in_threadpool(answer_question, question))
     except ProviderUnavailable as exc:
@@ -401,6 +432,89 @@ async def ai_analyst(request: Request):
         return _json_response({"error": str(exc)}, 400)
     except Exception:
         return _json_response({"error": "AI Analyst failed"}, 500)
+
+
+# ============================================================================
+# Phase 1: Tool Registry & Agent Execution Endpoints
+# ============================================================================
+
+@app.get("/api/v1/tools")
+async def list_tools_endpoint(
+    request: Request,
+    agent_name: Optional[str] = Query(default=None),
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    """List registered deterministic tools, optionally filtered by agent authorization."""
+    tools = default_registry.list_tools(agent_name=agent_name)
+    serialized = [
+        {
+            "name": t.name,
+            "description": t.description,
+            "authorized_agents": t.authorized_agents,
+            "input_schema": t.input_schema.model_json_schema(),
+        }
+        for t in tools
+    ]
+    return _json_response(
+        {
+            "tenant_id": context.tenant_id,
+            "user_id": context.user_id,
+            "correlation_id": context.correlation_id,
+            "tools": serialized,
+        }
+    )
+
+
+@app.post("/api/v1/tools/execute")
+async def execute_tool_endpoint(
+    request: Request,
+    payload: ExecuteToolRequest,
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    """Execute a deterministic tool with trusted tenant injection and agent authorization."""
+    try:
+        result = await run_in_threadpool(
+            default_registry.execute,
+            tool_name=payload.tool_name,
+            agent_name=payload.agent_name,
+            tenant_id=context.tenant_id,
+            raw_input=payload.parameters,
+            correlation_id=context.correlation_id,
+        )
+        return _json_response(result.model_dump(mode="json"))
+    except ToolNotFoundError as exc:
+        return _json_response({"error": str(exc)}, 404)
+    except (ToolPermissionError, PermissionError) as exc:
+        return _json_response({"error": str(exc)}, 403)
+    except Exception as exc:
+        return _json_response({"error": f"Tool execution failed: {str(exc)}"}, 500)
+
+
+@app.post("/api/v1/agents/run")
+async def run_agent_pipeline_endpoint(
+    request: Request,
+    payload: AgentRunRequest,
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    """Execute minimal LangGraph pipeline (initialize -> execute_tool -> synthesize_evidence)."""
+    question = payload.question.strip() if payload.question else ""
+    if not question:
+        return _json_response({"error": "question is required"}, 400)
+    if len(question) > 1000:
+        return _json_response({"error": "question must be 1000 characters or fewer"}, 400)
+
+    try:
+        final_state = await run_in_threadpool(
+            run_minimal_pipeline,
+            question=question,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            run_id=payload.run_id,
+            thread_id=payload.thread_id,
+        )
+        return _json_response(final_state)
+    except Exception as exc:
+        return _json_response({"error": f"Pipeline execution failed: {str(exc)}"}, 500)
 
 
 if __name__ == "__main__":

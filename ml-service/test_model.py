@@ -1,14 +1,21 @@
+import os
 from joblib import load
 
-bundle = load("demand_decision_rf.joblib")
 
-model = bundle["model"]
-label_encoder = bundle["label_encoder"]
+def test_rf_model_bundle_loads_and_predicts():
+    model_path = os.path.join(os.path.dirname(__file__), "demand_decision_rf.joblib")
+    bundle = load(model_path)
 
-# dummy input (replace later properly)
-result = model.predict([[1, 2, 0, 100]])
+    model = bundle["model"]
+    label_encoder = bundle["label_encoder"]
 
-decoded = label_encoder.inverse_transform(result)
+    result = model.predict([[1, 2, 0, 100]])
+    decoded = label_encoder.inverse_transform(result)
 
-print("Encoded:", result)
-print("Decoded:", decoded)
+    assert len(decoded) == 1
+    assert decoded[0] in ["increase", "maintain", "reduce"]
+
+
+if __name__ == "__main__":
+    test_rf_model_bundle_loads_and_predicts()
+    print("RF model test completed successfully.")

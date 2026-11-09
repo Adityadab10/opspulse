@@ -7,6 +7,11 @@ from predictionService import predict_demand
 import sys
 
 
+def test_prophet_callable():
+    """Verify predict_demand is callable for pytest regression."""
+    assert callable(predict_demand)
+
+
 def run_prediction_test(product_id):
     """Test prediction for a given product ID."""
     print("\n" + "="*60)
