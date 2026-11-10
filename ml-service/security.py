@@ -7,8 +7,7 @@ import os
 import uuid
 from typing import NamedTuple
 
-from fastapi import HTTPException, Request, Security
-from fastapi.security import APIKeyHeader
+from fastapi import HTTPException, Request
 
 
 INTERNAL_TOKEN_HEADER = "x-ml-internal-token"
@@ -33,12 +32,12 @@ def verify_internal_token(supplied_token: str | None) -> None:
     if not expected_token:
         raise HTTPException(
             status_code=503,
-            detail="AI Analyst authorization is not configured on ML service",
+            detail="AI Analyst authorization is not configured",
         )
     if not supplied_token or not hmac.compare_digest(supplied_token.strip(), expected_token):
         raise HTTPException(
             status_code=401,
-            detail="Invalid internal authorization token",
+            detail="Invalid internal authorization",
         )
 
 

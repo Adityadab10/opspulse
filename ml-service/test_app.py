@@ -10,6 +10,19 @@ import app
 client = TestClient(app.app)
 
 
+@pytest.fixture(autouse=True)
+def override_trusted_context():
+    from security import TrustedContext, require_trusted_context
+    app.app.dependency_overrides[require_trusted_context] = lambda: TrustedContext(
+        tenant_id="test-tenant-001",
+        user_id="test-user-001",
+        correlation_id="test-corr-001",
+    )
+    yield
+    app.app.dependency_overrides.clear()
+
+
+
 def test_compare_models_requires_product_id(monkeypatch):
     monkeypatch.setattr(app, "compare_arima_prophet", lambda _: {})
 

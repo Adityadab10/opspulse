@@ -24,7 +24,7 @@ def test_analyst_requires_internal_authorization(monkeypatch):
     monkeypatch.setenv("ML_ANALYST_INTERNAL_TOKEN", "test-internal-token")
     response = client.post("/ai-analyst", json={"question": "How many products exist?"})
     assert response.status_code == 401
-    assert response.json() == {"error": "Invalid internal authorization"}
+    assert response.json()["error"] == "Invalid internal authorization"
 
 
 def test_analyst_rejects_malformed_internal_authorization(monkeypatch):
@@ -35,29 +35,37 @@ def test_analyst_rejects_malformed_internal_authorization(monkeypatch):
         json={"question": "How many products exist?"},
     )
     assert response.status_code == 401
-    assert response.json() == {"error": "Invalid internal authorization"}
+    assert response.json()["error"] == "Invalid internal authorization"
 
 
 def test_analyst_fails_closed_without_internal_configuration(monkeypatch):
     monkeypatch.delenv("ML_ANALYST_INTERNAL_TOKEN", raising=False)
     response = client.post(
         "/ai-analyst",
-        headers={"X-ML-Internal-Token": "test-internal-token"},
+        headers={
+            "X-ML-Internal-Token": "test-internal-token",
+            "X-User-ID": "test-user",
+            "X-Tenant-ID": "test-tenant",
+        },
         json={"question": "How many products exist?"},
     )
     assert response.status_code == 503
-    assert response.json() == {"error": "AI Analyst authorization is not configured"}
+    assert response.json()["error"] == "AI Analyst authorization is not configured"
 
 
 def test_analyst_rejects_empty_question(monkeypatch):
     monkeypatch.setenv("ML_ANALYST_INTERNAL_TOKEN", "test-internal-token")
     response = client.post(
         "/ai-analyst",
-        headers={"X-ML-Internal-Token": "test-internal-token"},
+        headers={
+            "X-ML-Internal-Token": "test-internal-token",
+            "X-User-ID": "test-user",
+            "X-Tenant-ID": "test-tenant",
+        },
         json={"question": "   "},
     )
     assert response.status_code == 400
-    assert response.json() == {"error": "question is required"}
+    assert response.json()["error"] == "question is required"
 
 
 def test_analyst_authorized_request_returns_grounded_response(monkeypatch):
@@ -65,7 +73,7 @@ def test_analyst_authorized_request_returns_grounded_response(monkeypatch):
     monkeypatch.setattr(
         app,
         "answer_question",
-        lambda question: {
+        lambda question, *args, **kwargs: {
             "answer": "There are 20 products.",
             "category": "live_business_analytics",
             "sources": [{"type": "live_database", "label": "PostgreSQL analytics"}],
@@ -75,7 +83,11 @@ def test_analyst_authorized_request_returns_grounded_response(monkeypatch):
 
     response = client.post(
         "/ai-analyst",
-        headers={"X-ML-Internal-Token": "test-internal-token"},
+        headers={
+            "X-ML-Internal-Token": "test-internal-token",
+            "X-User-ID": "test-user",
+            "X-Tenant-ID": "test-tenant",
+        },
         json={"question": "How many products exist?"},
     )
 
@@ -88,17 +100,21 @@ def test_analyst_returns_sanitized_retrieval_failure(monkeypatch):
     monkeypatch.setattr(
         app,
         "answer_question",
-        lambda _: (_ for _ in ()).throw(RuntimeError("database password leaked")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database password leaked")),
     )
 
     response = client.post(
         "/ai-analyst",
-        headers={"X-ML-Internal-Token": "test-internal-token"},
+        headers={
+            "X-ML-Internal-Token": "test-internal-token",
+            "X-User-ID": "test-user",
+            "X-Tenant-ID": "test-tenant",
+        },
         json={"question": "How many products exist?"},
     )
 
     assert response.status_code == 500
-    assert response.json() == {"error": "AI Analyst failed"}
+    assert response.json()["error"] == "AI Analyst failed"
 
 
 def test_classification_supports_combined_questions():

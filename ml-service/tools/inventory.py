@@ -19,10 +19,17 @@ def get_inventory_risk(
     payload: InventoryRiskInput,
     db: DatabaseAdapter | None = None,
 ) -> InventoryRiskOutput:
-    """Evaluate inventory risk indicators from active alerts and prediction decisions."""
+    """Evaluate inventory risk indicators from active alerts and prediction decisions with tenant scoping."""
     adapter = db or DatabaseAdapter()
-    conditions = ["a.is_active = true"]
-    params: list[Any] = []
+    if not (adapter.has_tenant_column("alerts") and adapter.has_tenant_column("products") and adapter.has_tenant_column("predictions")):
+        return InventoryRiskOutput(
+            success=False,
+            error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
+    conditions = ["a.is_active = true", "a.tenant_id = %s", "p.tenant_id = %s"]
+    params: list[Any] = [tenant_id, tenant_id]
 
     if payload.product_id:
         conditions.append("a.product_id::text = %s")
@@ -54,8 +61,8 @@ def get_inventory_risk(
                 ELSE 'general_risk'
             END AS risk_category
         FROM alerts a
-        JOIN products p ON p.id = a.product_id
-        LEFT JOIN predictions pr ON pr.product_id = a.product_id
+        JOIN products p ON p.id = a.product_id AND p.tenant_id = a.tenant_id
+        LEFT JOIN predictions pr ON pr.product_id = a.product_id AND pr.tenant_id = a.tenant_id
         {where_clause}
         ORDER BY
             CASE a.severity

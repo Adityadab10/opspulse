@@ -96,7 +96,7 @@ def _generate_forecast_with_prophet(df):
     return max(0, int(round(next_window["yhat"].sum())))
 
 
-def _resolve_news_signal(product_id, news_text):
+def _resolve_news_signal(product_id, news_text, tenant_id: str | None = None):
     """Resolve keyword + impact from product-specific headlines with safe neutral fallback."""
     fallback = {
         "impact": "neutral",
@@ -111,7 +111,7 @@ def _resolve_news_signal(product_id, news_text):
     }
 
     try:
-        product_name = get_product_name(product_id) or ""
+        product_name = get_product_name(product_id, tenant_id=tenant_id) or ""
 
         print("Product:", product_name)
 
@@ -261,7 +261,7 @@ def _predict_decision_and_confidence(bundle, features):
     return decision, confidence
 
 
-def predict_demand(product_id: str, news_text: str = ""):
+def predict_demand(product_id: str, news_text: str = "", tenant_id: str | None = None):
     """
     Unified decision pipeline:
     1) fetch sales data from PostgreSQL
@@ -286,7 +286,7 @@ def predict_demand(product_id: str, news_text: str = ""):
         ValueError: If insufficient data or product not found
     """
     try:
-        docs = get_sales_data(product_id)
+        docs = get_sales_data(product_id, tenant_id=tenant_id)
         logger.info("Fetched %s sales rows for productId=%s", len(docs), product_id)
 
         df = _prepare_prophet_dataframe(docs)
@@ -294,7 +294,7 @@ def predict_demand(product_id: str, news_text: str = ""):
 
         forecast_value = _generate_forecast_with_prophet(df)
 
-        news_signal = _resolve_news_signal(product_id=product_id, news_text=news_text)
+        news_signal = _resolve_news_signal(product_id=product_id, news_text=news_text, tenant_id=tenant_id)
         impact = news_signal["impact"]
         adjusted_forecast = _adjust_forecast_by_score(forecast_value, news_signal.get("score", 5.0))
 

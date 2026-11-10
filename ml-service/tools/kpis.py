@@ -15,19 +15,26 @@ def get_business_kpis(
     payload: BusinessKpisInput,
     db: DatabaseAdapter | None = None,
 ) -> BusinessKpisOutput:
-    """Calculate executive business health KPIs matching dashboard parity."""
+    """Calculate executive business health KPIs matching dashboard parity and tenant scoping."""
     adapter = db or DatabaseAdapter()
+    if not (adapter.has_tenant_column("products") and adapter.has_tenant_column("sales") and adapter.has_tenant_column("alerts")):
+        return BusinessKpisOutput(
+            success=False,
+            error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
     window_days = payload.window_days
 
     try:
         # Step 1: Overall counts and volumes
         totals_sql = """
             SELECT
-                (SELECT COUNT(*) FROM products) AS total_products,
-                (SELECT COALESCE(SUM(quantity), 0) FROM sales) AS total_sales_volume,
-                (SELECT COUNT(*) FROM alerts WHERE is_active = true) AS active_alerts
+                (SELECT COUNT(*) FROM products WHERE tenant_id = %s) AS total_products,
+                (SELECT COALESCE(SUM(quantity), 0) FROM sales WHERE tenant_id = %s) AS total_sales_volume,
+                (SELECT COUNT(*) FROM alerts WHERE is_active = true AND tenant_id = %s) AS active_alerts
         """
-        totals = adapter.query_one(totals_sql) or {}
+        totals = adapter.query_one(totals_sql, (tenant_id, tenant_id, tenant_id)) or {}
         total_products = int(totals.get("total_products", 0))
         total_sales_volume = int(totals.get("total_sales_volume", 0))
         active_alerts = int(totals.get("active_alerts", 0))
@@ -49,10 +56,11 @@ def get_business_kpis(
                 COALESCE(SUM(CASE WHEN s.sale_date > %s AND s.sale_date <= %s THEN s.quantity ELSE 0 END), 0) AS recent_qty,
                 COALESCE(SUM(CASE WHEN s.sale_date > %s AND s.sale_date <= %s THEN s.quantity ELSE 0 END), 0) AS prev_qty
             FROM products p
-            LEFT JOIN sales s ON s.product_id = p.id
+            LEFT JOIN sales s ON s.product_id = p.id AND s.tenant_id = %s
+            WHERE p.tenant_id = %s
             GROUP BY p.id, p.name
         """
-        rows = adapter.query(trend_sql, (recent_cutoff, now, prev_cutoff, recent_cutoff))
+        rows = adapter.query(trend_sql, (recent_cutoff, now, prev_cutoff, recent_cutoff, tenant_id, tenant_id))
 
         product_trends = []
         for r in rows:

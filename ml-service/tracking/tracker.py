@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime, timezone
 import json
 import logging
@@ -13,15 +14,34 @@ from tools.db import DatabaseAdapter
 
 logger = logging.getLogger(__name__)
 
+MAX_MEMORY_RUNS_DEFAULT = 500
+
 
 class RunTracker:
-    """Manages lifecycle persistence of agent_runs and agent_steps in PostgreSQL."""
+    """Manages lifecycle persistence of agent_runs and agent_steps in PostgreSQL with bounded fallback."""
 
-    def __init__(self, db: DatabaseAdapter | None = None):
+    def __init__(self, db: DatabaseAdapter | None = None, max_memory_runs: int = MAX_MEMORY_RUNS_DEFAULT):
         self._db = db or DatabaseAdapter()
-        # In-memory storage for test/offline fallback
-        self._memory_runs: dict[str, dict[str, Any]] = {}
+        self._max_memory_runs = max_memory_runs
+        # Bounded FIFO/LRU storage for test/offline fallback
+        self._memory_runs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._memory_steps: dict[str, list[dict[str, Any]]] = {}
+        self._persistence_degraded: bool = False
+        self._last_persistence_error: str | None = None
+
+    def get_persistence_status(self) -> dict[str, Any]:
+        """Return current status of database tracking persistence."""
+        return {
+            "persistence_degraded": self._persistence_degraded,
+            "last_persistence_error": self._last_persistence_error,
+            "in_memory_runs_count": len(self._memory_runs),
+            "max_memory_runs": self._max_memory_runs,
+        }
+
+    def _evict_oldest_if_needed(self) -> None:
+        while len(self._memory_runs) >= self._max_memory_runs:
+            oldest_id, _ = self._memory_runs.popitem(last=False)
+            self._memory_steps.pop(oldest_id, None)
 
     def create_run(
         self,
@@ -49,10 +69,14 @@ class RunTracker:
                 sql,
                 (actual_run_id, tenant_id, user_id, actual_thread_id, trigger_type, json.dumps(meta), question),
             )
+            self._persistence_degraded = False
         except Exception as exc:
+            self._persistence_degraded = True
+            self._last_persistence_error = str(exc)
             logger.warning("DB insert into agent_runs failed (using in-memory fallback): %s", exc)
 
-        # Always record in memory as well
+        # Record in bounded memory
+        self._evict_oldest_if_needed()
         self._memory_runs[actual_run_id] = {
             "id": actual_run_id,
             "tenant_id": tenant_id,
@@ -83,6 +107,14 @@ class RunTracker:
         error_message: str | None = None,
         duration_ms: int | None = None,
     ) -> None:
+        db_status = str(status)
+        if db_status == "insufficient_evidence":
+            db_status = "partial"
+        elif db_status == "error":
+            db_status = "failed"
+        elif db_status == "planning":
+            db_status = "running"
+
         sql = """
             UPDATE agent_runs
             SET status = %s,
@@ -100,7 +132,7 @@ class RunTracker:
             self._db.query_one(
                 sql,
                 (
-                    status,
+                    db_status,
                     final_answer,
                     confidence,
                     json.dumps(limitations or []),
@@ -111,7 +143,10 @@ class RunTracker:
                     run_id,
                 ),
             )
+            self._persistence_degraded = False
         except Exception as exc:
+            self._persistence_degraded = True
+            self._last_persistence_error = str(exc)
             logger.warning("DB update agent_runs failed: %s", exc)
 
         if run_id in self._memory_runs:
@@ -154,6 +189,10 @@ class RunTracker:
             "started_at": datetime.now(timezone.utc),
         }
 
+        db_status = str(status)
+        if db_status == "pending":
+            db_status = "running"
+
         sql = """
             INSERT INTO agent_steps (
                 run_id, tenant_id, step_number, agent_name, node_name,
@@ -177,7 +216,7 @@ class RunTracker:
                     step_number,
                     agent_name,
                     node_name,
-                    status,
+                    db_status,
                     json.dumps(input_payload or {}),
                     json.dumps(output_payload or {}),
                     json.dumps(tool_calls or []),
@@ -185,7 +224,10 @@ class RunTracker:
                     duration_ms,
                 ),
             )
+            self._persistence_degraded = False
         except Exception as exc:
+            self._persistence_degraded = True
+            self._last_persistence_error = str(exc)
             logger.warning("DB insert agent_steps failed: %s", exc)
 
         if run_id not in self._memory_steps:

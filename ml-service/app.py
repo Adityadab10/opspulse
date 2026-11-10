@@ -7,6 +7,7 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 5002
 from datetime import date, datetime
 from decimal import Decimal
 import hmac
+import inspect
 import os
 from typing import Any, Optional
 
@@ -16,6 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
+from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -31,7 +33,7 @@ from security import (
     require_trusted_context,
 )
 from tools import ToolNotFoundError, ToolPermissionError, default_registry
-from workflow import build_minimal_graph, run_minimal_pipeline
+from workflow import build_minimal_graph, run_minimal_pipeline, default_checkpointer_manager
 
 try:
     from predictionService import predict_demand
@@ -72,19 +74,21 @@ except Exception as exc:  # Keep the endpoint's existing fallback behavior.
 
 
 class ProductRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     productId: Any = None
     newsText: str = ""
 
 
 class NewsInsightsRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     productName: Optional[str] = None
 
 
 class AnalystRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     question: str
 
 
@@ -104,7 +108,14 @@ class AgentRunRequest(BaseModel):
     run_id: Optional[str] = None
 
 
-app = FastAPI(title="OpsPulse ML Service")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    default_checkpointer_manager.initialize()
+    yield
+    default_checkpointer_manager.close()
+
+
+app = FastAPI(title="OpsPulse ML Service", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -112,6 +123,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Ensure consistent error responses with both 'error' and 'detail' fields."""
+    return _json_response(
+        {"error": exc.detail, "detail": exc.detail},
+        status_code=exc.status_code,
+    )
 
 
 def _serialize_for_json(value):
@@ -137,6 +157,22 @@ def _json_response(payload, status_code=200):
     )
 
 
+def _safe_call(func, *args, **kwargs):
+    """Safely invoke func with kwargs matching its signature, supporting monkeypatched mocks."""
+    try:
+        sig = inspect.signature(func)
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if has_var_keyword:
+            return func(*args, **kwargs)
+        valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return func(*args, **valid_kwargs)
+    except (ValueError, TypeError):
+        try:
+            return func(*args, **kwargs)
+        except TypeError:
+            return func(*args)
+
+
 async def _parse_json_body(request: Request):
     try:
         payload = await request.json()
@@ -146,10 +182,7 @@ async def _parse_json_body(request: Request):
     if not isinstance(payload, dict):
         return None
 
-    try:
-        return ProductRequest.model_validate(payload)
-    except ValidationError:
-        return None
+    return ProductRequest.model_validate(payload)
 
 
 async def _parse_news_body(request: Request):
@@ -161,36 +194,50 @@ async def _parse_news_body(request: Request):
     if not isinstance(payload, dict):
         return None
 
-    try:
-        return NewsInsightsRequest.model_validate(payload)
-    except ValidationError:
-        return None
+    return NewsInsightsRequest.model_validate(payload)
+
+
+@app.get("/health")
+def health():
+    """Lightweight unauthenticated healthcheck for orchestrators and load balancers."""
+    return _json_response({"status": "ok", "service": "ml-service"})
 
 
 @app.get("/test")
-def test():
+def test(request: Request):
+    """Sanitized status check in production; diagnostic database metrics in explicit debug mode."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
+        return _json_response({"status": "ok", "service": "ml-service"})
+
+    context = require_trusted_context(request)
     diagnostics = (
-        get_db_diagnostics()
+        get_db_diagnostics(tenant_id=context.tenant_id)
         if get_db_diagnostics
         else {"error": "postgresService unavailable"}
     )
     return _json_response(
         {
-            "message": "ML service running",
+            "message": "ML service running (debug mode)",
             "database": diagnostics,
+            "tenant_id": context.tenant_id,
         }
     )
 
 
 @app.get("/debug-sales/{product_id}")
-def debug_sales(product_id: str):
-    print(f"\n--- /debug-sales/{product_id} endpoint was called ---")
+def debug_sales(
+    product_id: str,
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    """Diagnostic sales dump; disabled by default in production with 404."""
+    if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Endpoint not found")
 
     if get_raw_sales_data is None:
         return _json_response({"error": "postgresService not available"}, 503)
 
     try:
-        docs, query, normalized = get_raw_sales_data(product_id)
+        docs, query, normalized = get_raw_sales_data(product_id, tenant_id=context.tenant_id)
         return _json_response(
             {
                 "productIdInput": product_id,
@@ -198,6 +245,7 @@ def debug_sales(product_id: str):
                 "query": _serialize_for_json(query),
                 "matchedCount": len(docs),
                 "documents": _serialize_for_json(docs),
+                "tenant_id": context.tenant_id,
             }
         )
     except Exception as exc:
@@ -206,21 +254,30 @@ def debug_sales(product_id: str):
 
 
 @app.post("/predict")
-async def predict(request: Request):
+async def predict(
+    request: Request,
+    context: TrustedContext = Depends(require_trusted_context),
+):
     print("\n--- /predict endpoint was called ---")
 
     if predict_demand is None:
         return _json_response({"error": "Prediction service not available"}, 503)
 
-    payload = await _parse_json_body(request)
+    try:
+        payload = await _parse_json_body(request)
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
+
     if payload is None or payload.productId is None:
         return _json_response({"error": "productId is required"}, 400)
 
     try:
         prediction_result = await run_in_threadpool(
+            _safe_call,
             predict_demand,
             payload.productId,
             news_text=payload.newsText,
+            tenant_id=context.tenant_id,
         )
         return _json_response(prediction_result)
     except ValueError as exc:
@@ -232,18 +289,30 @@ async def predict(request: Request):
 
 
 @app.post("/compare-models")
-async def compare_models(request: Request):
+async def compare_models(
+    request: Request,
+    context: TrustedContext = Depends(require_trusted_context),
+):
     print("\n--- /compare-models endpoint was called ---")
 
     if compare_arima_prophet is None:
         return _json_response({"error": "Comparison service not available"}, 503)
 
-    payload = await _parse_json_body(request)
+    try:
+        payload = await _parse_json_body(request)
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
+
     if payload is None or payload.productId is None:
         return _json_response({"error": "productId is required"}, 400)
 
     try:
-        comparison = await run_in_threadpool(compare_arima_prophet, payload.productId)
+        comparison = await run_in_threadpool(
+            _safe_call,
+            compare_arima_prophet,
+            payload.productId,
+            tenant_id=context.tenant_id,
+        )
         prophet_metrics = comparison.get("prophet_metrics", {})
         arima_metrics = comparison.get("arima_metrics", {})
         return _json_response(
@@ -270,20 +339,29 @@ async def compare_models(request: Request):
 
 
 @app.api_route("/api/predict/{product_id}", methods=["POST", "GET"])
-async def predict_legacy(product_id: str, request: Request):
+async def predict_legacy(
+    product_id: str,
+    request: Request,
+    context: TrustedContext = Depends(require_trusted_context),
+):
     print(f"\n--- /api/predict/{product_id} legacy endpoint was called ---")
 
     if predict_demand is None:
         return _json_response({"error": "Prediction service not available"}, 503)
 
-    payload = await _parse_json_body(request)
+    try:
+        payload = await _parse_json_body(request) if request.method == "POST" else None
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
     news_text = payload.newsText if payload else ""
 
     try:
         prediction_result = await run_in_threadpool(
+            _safe_call,
             predict_demand,
             product_id,
             news_text=news_text,
+            tenant_id=context.tenant_id,
         )
         return _json_response(prediction_result)
     except ValueError as exc:
@@ -298,10 +376,15 @@ async def predict_legacy(product_id: str, request: Request):
 async def news_insights(
     request: Request,
     productName: Optional[str] = Query(default=None),
+    context: TrustedContext = Depends(require_trusted_context),
 ):
     print("\n--- /news-insights endpoint was called ---")
 
-    payload = await _parse_news_body(request) if request.method == "POST" else None
+    try:
+        payload = await _parse_news_body(request) if request.method == "POST" else None
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
+
     product_name = payload.productName if payload else None
     product_name = (product_name or productName or "").strip()
     if not product_name:
@@ -402,30 +485,34 @@ def _build_news_insights(product_name: str) -> dict[str, Any]:
 
 
 @app.post("/ai-analyst")
-async def ai_analyst(request: Request):
-    expected_token = os.getenv("ML_ANALYST_INTERNAL_TOKEN", "").strip()
-    supplied_token = request.headers.get("x-ml-internal-token", "").strip()
-    if not expected_token:
-        return _json_response({"error": "AI Analyst authorization is not configured"}, 503)
-    if not supplied_token or not hmac.compare_digest(supplied_token, expected_token):
-        return _json_response({"error": "Invalid internal authorization"}, 401)
+async def ai_analyst(
+    request: Request,
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    """AI Analyst question answering with mandatory trusted service authentication and tenant context."""
     try:
         raw_payload = await request.json()
         payload = AnalystRequest.model_validate(raw_payload)
-    except (ValidationError, ValueError, TypeError):
-        payload = None
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
+    except Exception:
+        return _json_response({"error": "Invalid JSON body"}, 400)
+
     question = payload.question.strip() if payload else ""
     if not question:
         return _json_response({"error": "question is required"}, 400)
     if len(question) > 1000:
         return _json_response({"error": "question must be 1000 characters or fewer"}, 400)
 
-    # Optional caller identity context from Node
-    tenant_id = request.headers.get("x-tenant-id", "").strip() or "default"
-    user_id = request.headers.get("x-user-id", "").strip() or "anonymous"
-
     try:
-        return _json_response(await run_in_threadpool(answer_question, question))
+        return _json_response(
+            await run_in_threadpool(
+                answer_question,
+                question=question,
+                tenant_id=context.tenant_id,
+                user_id=context.user_id,
+            )
+        )
     except ProviderUnavailable as exc:
         return _json_response({"error": str(exc)}, 503)
     except ValueError as exc:

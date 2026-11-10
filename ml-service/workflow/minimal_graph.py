@@ -1,15 +1,16 @@
 """Minimal LangGraph pipeline for OpsPulse multi-agent foundation (T06).
 
 Flow: initialize -> execute_tool -> synthesize_evidence
-Uses typed OpsPulseState with pluggable checkpoint persistence.
+Uses typed OpsPulseState with pluggable checkpoint persistence and tenant namespacing.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
-import uuid
 from typing import Any
+import uuid
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
@@ -20,6 +21,93 @@ from tools import default_registry
 from tracking.tracker import default_tracker
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointerManager:
+    """Manages LangGraph checkpointer initialization, connection pooling, and tenant namespacing."""
+
+    def __init__(self, database_url: str | None = None, checkpointer_type: str | None = None):
+        self._database_url = database_url if database_url is not None else os.getenv("DATABASE_URL")
+        self._checkpointer_type = (checkpointer_type or os.getenv("LANGGRAPH_CHECKPOINTER", "memory")).lower()
+        self._pool = None
+        self._saver = None
+        self._initialized = False
+
+    def initialize(self) -> None:
+        """Initialize connection pool and PostgresSaver if checkpointer_type is postgres."""
+        if self._checkpointer_type != "postgres":
+            logger.info("LangGraph checkpointer set to '%s'; skipping Postgres pool initialization.", self._checkpointer_type)
+            return
+
+        if not self._database_url:
+            if os.getenv("ENVIRONMENT", "").lower() == "production":
+                raise RuntimeError("LANGGRAPH_CHECKPOINTER=postgres requires DATABASE_URL to be set in production.")
+            logger.warning("DATABASE_URL not set for postgres checkpointer; falling back to memory in dev.")
+            self._checkpointer_type = "memory"
+            return
+
+        try:
+            from psycopg_pool import ConnectionPool
+            from langgraph.checkpoint.postgres import PostgresSaver
+
+            if self._pool is None:
+                self._pool = ConnectionPool(
+                    conninfo=self._database_url,
+                    min_size=1,
+                    max_size=10,
+                    open=True,
+                    timeout=5.0,
+                    kwargs={"autocommit": True},
+                )
+            saver = PostgresSaver(self._pool)
+            if not self._initialized:
+                saver.setup()
+                self._initialized = True
+            self._saver = saver
+            logger.info("PostgresSaver initialized successfully with pooled connection.")
+        except Exception as exc:
+            if self._pool is not None:
+                try:
+                    self._pool.close()
+                except Exception:
+                    pass
+                self._pool = None
+            if os.getenv("ENVIRONMENT", "").lower() == "production":
+                raise RuntimeError(f"Failed to initialize PostgresSaver in production: {exc}") from exc
+            logger.warning("PostgresSaver initialization failed (%s); falling back to MemorySaver in dev.", exc)
+            self._saver = None
+            self._checkpointer_type = "memory"
+
+    def get_saver(self) -> BaseCheckpointSaver:
+        """Returns active checkpointer instance."""
+        if self._saver is not None:
+            return self._saver
+        if self._checkpointer_type == "postgres" and not self._initialized:
+            self.initialize()
+            if self._saver is not None:
+                return self._saver
+        return MemorySaver()
+
+    def close(self) -> None:
+        if self._pool is not None:
+            try:
+                self._pool.close()
+            except Exception:
+                pass
+            self._pool = None
+            self._saver = None
+            self._initialized = False
+
+    @staticmethod
+    def namespace_thread_id(tenant_id: str, thread_id: str) -> str:
+        """Namespace thread_id to prevent cross-tenant checkpoint collisions and unauthorized access."""
+        prefix = f"{tenant_id}:"
+        if thread_id.startswith(prefix):
+            return thread_id
+        return f"{prefix}{thread_id}"
+
+
+default_checkpointer_manager = CheckpointerManager()
 
 
 def initialize_node(state: OpsPulseState) -> dict[str, Any]:
@@ -39,7 +127,6 @@ def initialize_node(state: OpsPulseState) -> dict[str, Any]:
     if "product" in lowered or "sku" in lowered or "almond" in lowered:
         selected_tool = "get_product_snapshot"
         selected_agent = "business_analyst"
-        # Extract term or default
         tool_input = {"product_id": question}
     elif "alert" in lowered or "risk" in lowered or "stock" in lowered:
         selected_tool = "get_inventory_risk"
@@ -215,7 +302,7 @@ def build_minimal_graph(checkpointer: BaseCheckpointSaver | None = None) -> Any:
     graph.add_edge("execute_tool", "synthesize_evidence")
     graph.add_edge("synthesize_evidence", END)
 
-    saver = checkpointer if checkpointer is not None else MemorySaver()
+    saver = checkpointer if checkpointer is not None else default_checkpointer_manager.get_saver()
     return graph.compile(checkpointer=saver)
 
 
@@ -227,10 +314,11 @@ def run_minimal_pipeline(
     thread_id: str | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> OpsPulseState:
-    """Execute the pipeline and return the final state."""
+    """Execute the pipeline and return the final state with tenant-namespaced checkpointing."""
     app = build_minimal_graph(checkpointer=checkpointer)
     actual_run_id = run_id or str(uuid.uuid4())
     actual_thread_id = thread_id or actual_run_id
+    namespaced_thread = CheckpointerManager.namespace_thread_id(tenant_id, actual_thread_id)
 
     initial_state: OpsPulseState = {
         "run_id": actual_run_id,
@@ -243,6 +331,6 @@ def run_minimal_pipeline(
         "conversation_context": [],
     }
 
-    config = {"configurable": {"thread_id": actual_thread_id}}
+    config = {"configurable": {"thread_id": namespaced_thread}}
     final_state = app.invoke(initial_state, config=config)
     return final_state

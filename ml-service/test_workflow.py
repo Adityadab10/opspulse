@@ -5,8 +5,9 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from tools.db import DatabaseAdapter
-from tracking.tracker import default_tracker
+from tracking.tracker import RunTracker, default_tracker
 from workflow.minimal_graph import (
+    CheckpointerManager,
     build_minimal_graph,
     execute_tool_node,
     initialize_node,
@@ -18,7 +19,12 @@ from workflow.minimal_graph import (
 class MockDatabaseAdapter(DatabaseAdapter):
     """Deterministic mock DB adapter for workflow tests."""
 
+    def __init__(self, schema_ready: bool = True):
+        super().__init__(schema_checker=lambda _: schema_ready)
+
     def query(self, sql: str, params=None, tenant_id: str | None = None):
+        if "agent_runs" in sql.lower() or "agent_steps" in sql.lower():
+            return []
         if "sales_volume" in sql or "sales" in sql.lower():
             return [
                 {
@@ -39,15 +45,20 @@ class MockDatabaseAdapter(DatabaseAdapter):
             ]
         return [{"metric": "val"}]
 
+    def query_one(self, sql: str, params=None, tenant_id: str | None = None):
+        rows = self.query(sql, params=params, tenant_id=tenant_id)
+        return rows[0] if rows else None
+
 
 @pytest.fixture(autouse=True)
 def mock_db_in_tools(monkeypatch):
-    """Ensure tools use mock adapter during workflow test execution."""
-    mock_adapter = MockDatabaseAdapter()
+    """Ensure tools and tracker use mock adapter during workflow test execution."""
+    mock_adapter = MockDatabaseAdapter(schema_ready=True)
     monkeypatch.setattr("tools.sales.DatabaseAdapter", lambda: mock_adapter)
     monkeypatch.setattr("tools.inventory.DatabaseAdapter", lambda: mock_adapter)
     monkeypatch.setattr("tools.products.DatabaseAdapter", lambda: mock_adapter)
     monkeypatch.setattr("tools.kpis.DatabaseAdapter", lambda: mock_adapter)
+    monkeypatch.setattr(default_tracker, "_db", mock_adapter)
 
 
 def test_initialize_node_routes_sales_question():
@@ -153,3 +164,61 @@ def test_pipeline_budget_and_insufficient_evidence():
     assert result["confidence"] <= 0.3
     assert result["status"] == "insufficient_evidence"
     assert "Unable to answer" in result["final_answer"]
+
+
+def test_tracker_bounded_memory_eviction():
+    """Verify RunTracker bounds in-memory fallback to max_memory_runs with FIFO eviction."""
+    tracker = RunTracker(db=MockDatabaseAdapter(schema_ready=True), max_memory_runs=3)
+
+    # Insert 3 runs
+    r1 = tracker.create_run(tenant_id="t1", user_id="u1", question="Q1")
+    r2 = tracker.create_run(tenant_id="t1", user_id="u1", question="Q2")
+    r3 = tracker.create_run(tenant_id="t1", user_id="u1", question="Q3")
+
+    status = tracker.get_persistence_status()
+    assert status["in_memory_runs_count"] == 3
+    assert status["max_memory_runs"] == 3
+
+    # Insert 4th run -> r1 must be evicted
+    r4 = tracker.create_run(tenant_id="t1", user_id="u1", question="Q4")
+    assert tracker.get_persistence_status()["in_memory_runs_count"] == 3
+    assert r1 not in tracker._memory_runs
+    assert r2 in tracker._memory_runs
+    assert r3 in tracker._memory_runs
+    assert r4 in tracker._memory_runs
+
+
+def test_tracker_persistence_degraded_reporting():
+    """Verify tracker marks persistence as degraded when database write raises."""
+    class FailingDbAdapter(DatabaseAdapter):
+        def query_one(self, sql, params=None, tenant_id=None):
+            raise RuntimeError("Database connection timed out")
+
+    tracker = RunTracker(db=FailingDbAdapter(), max_memory_runs=10)
+    tracker.create_run(tenant_id="t-fail", user_id="u1", question="Failing test")
+
+    status = tracker.get_persistence_status()
+    assert status["persistence_degraded"] is True
+    assert "connection timed out" in status["last_persistence_error"]
+
+
+def test_checkpointer_thread_namespacing():
+    """Verify CheckpointerManager namespaces thread_id by tenant to isolate state."""
+    namespaced = CheckpointerManager.namespace_thread_id("tenant-abc", "thread-123")
+    assert namespaced == "tenant-abc:thread-123"
+
+    # Idempotent if already prefixed
+    again = CheckpointerManager.namespace_thread_id("tenant-abc", namespaced)
+    assert again == "tenant-abc:thread-123"
+
+    # Different tenants produce distinct thread IDs for identical base IDs
+    other = CheckpointerManager.namespace_thread_id("tenant-xyz", "thread-123")
+    assert other == "tenant-xyz:thread-123"
+    assert namespaced != other
+
+
+def test_checkpointer_manager_clean_fallback():
+    """Verify CheckpointerManager cleanly returns MemorySaver when checkpointer is memory or unconfigured."""
+    mgr = CheckpointerManager(database_url="", checkpointer_type="memory")
+    saver = mgr.get_saver()
+    assert isinstance(saver, MemorySaver)

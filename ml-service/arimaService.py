@@ -93,7 +93,7 @@ def _pick_better_model(prophet_metrics: Dict[str, float], arima_metrics: Dict[st
     return "tie"
 
 
-def compare_arima_prophet(product_id: str) -> Dict[str, object]:
+def compare_arima_prophet(product_id: str, tenant_id: str | None = None) -> Dict[str, object]:
     """
     Compare ARIMA vs Prophet predictions on the same train/test split.
 
@@ -110,7 +110,7 @@ def compare_arima_prophet(product_id: str) -> Dict[str, object]:
     print("\n[arima] compare_arima_prophet called")
     print("[arima] product_id:", product_id)
 
-    docs = get_sales_data(product_id)
+    docs = get_sales_data(product_id, tenant_id=tenant_id)
     print("[arima] fetched sales docs:", len(docs))
 
     df = _prepare_sales_dataframe(docs)

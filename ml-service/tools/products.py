@@ -19,19 +19,27 @@ def get_product_snapshot(
     payload: ProductSnapshotInput,
     db: DatabaseAdapter | None = None,
 ) -> ProductSnapshotOutput:
-    """Retrieve full product profile: catalog info, sales aggregate, latest prediction, and active alerts."""
+    """Retrieve full product profile: catalog info, sales aggregate, latest prediction, and active alerts with tenant scoping."""
     adapter = db or DatabaseAdapter()
+    if not (adapter.has_tenant_column("products") and adapter.has_tenant_column("sales") and adapter.has_tenant_column("predictions") and adapter.has_tenant_column("alerts")):
+        return ProductSnapshotOutput(
+            success=False,
+            error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
     product_ref = payload.product_id.strip()
 
     # Step 1: Resolve product
     product_sql = """
         SELECT id, name, category, created_at, updated_at, legacy_mongo_id
         FROM products
-        WHERE id::text = %s OR legacy_mongo_id = %s OR lower(name) = lower(%s)
+        WHERE (id::text = %s OR legacy_mongo_id = %s OR lower(name) = lower(%s))
+          AND tenant_id = %s
         LIMIT 1
     """
     try:
-        product = adapter.query_one(product_sql, (product_ref, product_ref, product_ref))
+        product = adapter.query_one(product_sql, (product_ref, product_ref, product_ref, tenant_id))
         if not product:
             return ProductSnapshotOutput(
                 success=True,
@@ -49,9 +57,9 @@ def get_product_snapshot(
                 MAX(sale_date) AS latest_sale_at,
                 COALESCE(AVG(quantity), 0) AS average_sale_quantity
             FROM sales
-            WHERE product_id = %s
+            WHERE product_id = %s AND tenant_id = %s
         """
-        sales_data = adapter.query_one(sales_sql, (product_id,)) or {}
+        sales_data = adapter.query_one(sales_sql, (product_id, tenant_id)) or {}
 
         # Step 3: Latest prediction
         pred_sql = """
@@ -60,21 +68,21 @@ def get_product_snapshot(
                 avg_sales, percent_change, confidence, season_tag, decision, impact,
                 keyword, score, reason, contributing_factors, prediction_source, predicted_at
             FROM predictions
-            WHERE product_id = %s
+            WHERE product_id = %s AND tenant_id = %s
             ORDER BY predicted_at DESC
             LIMIT 1
         """
-        prediction_data = adapter.query_one(pred_sql, (product_id,))
+        prediction_data = adapter.query_one(pred_sql, (product_id, tenant_id))
 
         # Step 4: Active alerts
         alert_sql = """
             SELECT id, type, message, severity, percent_change, created_at
             FROM alerts
-            WHERE product_id = %s AND is_active = true
+            WHERE product_id = %s AND is_active = true AND tenant_id = %s
             ORDER BY created_at DESC
             LIMIT 5
         """
-        alerts = adapter.query(alert_sql, (product_id,))
+        alerts = adapter.query(alert_sql, (product_id, tenant_id))
 
         evidence = SqlEvidence(
             source_name="products",
@@ -121,16 +129,23 @@ def get_product_performance(
     payload: ProductPerformanceInput,
     db: DatabaseAdapter | None = None,
 ) -> ProductPerformanceOutput:
-    """Retrieve rankable product performance metrics."""
+    """Retrieve rankable product performance metrics with tenant scoping."""
     adapter = db or DatabaseAdapter()
-    conditions = []
-    params: list[Any] = []
+    if not (adapter.has_tenant_column("products") and adapter.has_tenant_column("sales") and adapter.has_tenant_column("predictions") and adapter.has_tenant_column("alerts")):
+        return ProductPerformanceOutput(
+            success=False,
+            error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
+    conditions = ["p.tenant_id = %s"]
+    params: list[Any] = [tenant_id, tenant_id, tenant_id, tenant_id]
 
     if payload.category:
         conditions.append("p.category = %s")
         params.append(payload.category)
 
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where_clause = f"WHERE {' AND '.join(conditions)}"
 
     order_by = "total_sales_volume DESC"
     if payload.sort_by == "percent_change":
@@ -149,9 +164,9 @@ def get_product_performance(
             pr.confidence,
             COUNT(a.id) FILTER (WHERE a.is_active = true) AS active_alerts_count
         FROM products p
-        LEFT JOIN sales s ON s.product_id = p.id
-        LEFT JOIN predictions pr ON pr.product_id = p.id
-        LEFT JOIN alerts a ON a.product_id = p.id
+        LEFT JOIN sales s ON s.product_id = p.id AND s.tenant_id = %s
+        LEFT JOIN predictions pr ON pr.product_id = p.id AND pr.tenant_id = %s
+        LEFT JOIN alerts a ON a.product_id = p.id AND a.tenant_id = %s
         {where_clause}
         GROUP BY p.id, p.name, p.category, pr.predicted_demand, pr.decision, pr.percent_change, pr.confidence
         ORDER BY {order_by}

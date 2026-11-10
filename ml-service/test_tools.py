@@ -24,11 +24,14 @@ from tools.db import DatabaseAdapter
 # Mock Database Adapter for deterministic in-memory tests
 class MockDatabaseAdapter(DatabaseAdapter):
 
-    def __init__(self, query_handler):
-        super().__init__()
+    def __init__(self, query_handler, schema_ready: bool = True):
+        super().__init__(schema_checker=lambda _: schema_ready)
         self._handler = query_handler
+        self._schema_ready = schema_ready
+        self.executed_queries: list[dict] = []
 
     def query(self, sql: str, params: tuple = ()) -> list[dict]:
+        self.executed_queries.append({"sql": sql, "params": params})
         return self._handler(sql, params)
 
     def query_one(self, sql: str, params: tuple = ()) -> dict | None:
@@ -275,3 +278,95 @@ def test_tool_registry_security_enforcement():
             tenant_id="",  # Empty tenant ID
             raw_input={},
         )
+
+
+def test_tools_parameterize_sql_tenant_predicate_and_value():
+    """Verify that every tool injects 'tenant_id = %s' and binds the exact trusted tenant ID."""
+    adapter = MockDatabaseAdapter(lambda sql, params: [{"total_volume": 100, "record_count": 10, "unique_products": 2}])
+    default_registry.execute(
+        tool_name="get_sales_summary",
+        agent_name="business_analyst",
+        tenant_id="tenant-acme-123",
+        raw_input=SalesSummaryInput(),
+        db=adapter,
+    )
+    assert len(adapter.executed_queries) == 1
+    query = adapter.executed_queries[0]
+    assert "s.tenant_id = %s" in query["sql"]
+    assert "tenant-acme-123" in query["params"]
+    assert query["params"][0] == "tenant-acme-123"
+
+
+def test_tools_return_controlled_schema_not_ready_error_when_column_absent():
+    """When tenant columns are absent (migration 005 not applied), tools fail closed with schema error."""
+    # schema_ready = False simulates pre-migration 005 database
+    unmigrated_adapter = MockDatabaseAdapter(lambda sql, params: [], schema_ready=False)
+
+    # 1. Sales summary tool
+    sales_res = default_registry.execute(
+        tool_name="get_sales_summary",
+        agent_name="business_analyst",
+        tenant_id="tenant-alpha",
+        raw_input=SalesSummaryInput(),
+        db=unmigrated_adapter,
+    )
+    assert sales_res.success is False
+    assert "Tenant isolation schema not established" in sales_res.error
+    assert "migration 005" in sales_res.error
+    # Crucial: NO SQL query was executed against the unpartitioned table!
+    assert len(unmigrated_adapter.executed_queries) == 0
+
+    # 2. Product snapshot tool
+    prod_res = default_registry.execute(
+        tool_name="get_product_snapshot",
+        agent_name="business_analyst",
+        tenant_id="tenant-alpha",
+        raw_input=ProductSnapshotInput(product_id="almonds"),
+        db=unmigrated_adapter,
+    )
+    assert prod_res.success is False
+    assert "Tenant isolation schema not established" in prod_res.error
+    assert len(unmigrated_adapter.executed_queries) == 0
+
+    # 3. Business KPIs tool
+    kpi_res = default_registry.execute(
+        tool_name="get_business_kpis",
+        agent_name="supervisor",
+        tenant_id="tenant-alpha",
+        raw_input=BusinessKpisInput(),
+        db=unmigrated_adapter,
+    )
+    assert kpi_res.success is False
+    assert "Tenant isolation schema not established" in kpi_res.error
+    assert len(unmigrated_adapter.executed_queries) == 0
+
+
+def test_tools_cross_tenant_isolation():
+    """Verify that tenant A and tenant B execute strictly isolated queries with their respective tenant IDs."""
+    tenant_a_queries = []
+    tenant_b_queries = []
+
+    adapter_a = MockDatabaseAdapter(lambda sql, params: [{"total_volume": 50, "record_count": 5, "unique_products": 1}])
+    adapter_b = MockDatabaseAdapter(lambda sql, params: [{"total_volume": 200, "record_count": 20, "unique_products": 4}])
+
+    res_a = default_registry.execute(
+        tool_name="get_sales_summary",
+        agent_name="business_analyst",
+        tenant_id="tenant-A",
+        raw_input=SalesSummaryInput(),
+        db=adapter_a,
+    )
+    res_b = default_registry.execute(
+        tool_name="get_sales_summary",
+        agent_name="business_analyst",
+        tenant_id="tenant-B",
+        raw_input=SalesSummaryInput(),
+        db=adapter_b,
+    )
+
+    assert res_a.success is True
+    assert res_b.success is True
+    assert adapter_a.executed_queries[0]["params"][0] == "tenant-A"
+    assert adapter_b.executed_queries[0]["params"][0] == "tenant-B"
+    assert "tenant-B" not in adapter_a.executed_queries[0]["params"]
+    assert "tenant-A" not in adapter_b.executed_queries[0]["params"]

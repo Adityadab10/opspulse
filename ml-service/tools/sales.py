@@ -20,10 +20,17 @@ def get_sales_summary(
     payload: SalesSummaryInput,
     db: DatabaseAdapter | None = None,
 ) -> SalesSummaryOutput:
-    """Retrieve sales volume, record count, and daily averages."""
+    """Retrieve sales volume, record count, and daily averages with tenant scoping."""
     adapter = db or DatabaseAdapter()
-    conditions = []
-    params: list[Any] = []
+    if not adapter.has_tenant_column("sales"):
+        return SalesSummaryOutput(
+            success=False,
+            error="Tenant isolation schema not established: table 'sales' is missing 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
+    conditions = ["s.tenant_id = %s"]
+    params: list[Any] = [tenant_id]
 
     if payload.product_id:
         conditions.append("s.product_id::text = %s")
@@ -35,7 +42,7 @@ def get_sales_summary(
         conditions.append("s.sale_date <= %s")
         params.append(payload.end_date)
 
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where_clause = f"WHERE {' AND '.join(conditions)}"
 
     sql = f"""
         SELECT
@@ -94,8 +101,15 @@ def compare_sales_periods(
     payload: SalesComparisonInput,
     db: DatabaseAdapter | None = None,
 ) -> SalesComparisonOutput:
-    """Compare sales between two consecutive windows with dashboard parity."""
+    """Compare sales between two consecutive windows with dashboard parity and tenant scoping."""
     adapter = db or DatabaseAdapter()
+    if not adapter.has_tenant_column("sales"):
+        return SalesComparisonOutput(
+            success=False,
+            error="Tenant isolation schema not established: table 'sales' is missing 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
     window_days = payload.window_days
 
     # Calculate cutoff dates
@@ -103,13 +117,13 @@ def compare_sales_periods(
     recent_start = now - timedelta(days=window_days)
     prev_start = recent_start - timedelta(days=window_days)
 
-    conditions = []
-    params: list[Any] = []
+    conditions = ["tenant_id = %s"]
+    params: list[Any] = [tenant_id]
     if payload.product_id:
         conditions.append("product_id::text = %s")
         params.append(str(payload.product_id))
 
-    extra_filter = f"AND {' AND '.join(conditions)}" if conditions else ""
+    extra_filter = f"AND {' AND '.join(conditions)}"
 
     sql = f"""
         SELECT

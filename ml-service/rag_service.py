@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -28,6 +29,41 @@ SUPPORTED_DOCUMENTS = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=32)
+def _check_table_has_tenant_id(table_name: str) -> bool:
+    """Check if table has a tenant_id column; results are cached."""
+    try:
+        with _cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = %s AND column_name = 'tenant_id'
+                LIMIT 1
+                """,
+                (table_name,),
+            )
+            return bool(cursor.fetchone())
+    except Exception:
+        return False
+
+
+def _safe_call(func, *args, **kwargs):
+    """Safely invoke func with kwargs if supported by signature, falling back if not."""
+    try:
+        sig = inspect.signature(func)
+        has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if has_var_keyword:
+            return func(*args, **kwargs)
+        valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return func(*args, **valid_kwargs)
+    except (ValueError, TypeError):
+        try:
+            return func(*args, **kwargs)
+        except TypeError:
+            return func(*args)
 
 
 class RetrievalTask(BaseModel):
@@ -170,19 +206,29 @@ def _extract_product_term(question: str) -> str | None:
     return None
 
 
-def _resolve_product(cursor, product_term: str) -> dict[str, Any] | None:
+def _resolve_product(
+    cursor,
+    product_term: str,
+    tenant_id: str | None = None,
+) -> dict[str, Any] | None:
     normalized_term = _clean_product_term(product_term)
     if not normalized_term:
         return None
 
+    if tenant_id and not _check_table_has_tenant_id("products"):
+        return None
+
+    tenant_clause = "AND tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("products")) else ""
+    exact_params = (normalized_term, tenant_id) if tenant_clause else (normalized_term,)
+
     cursor.execute(
-        """
+        f"""
         SELECT id, name, category, created_at, updated_at
         FROM products
-        WHERE lower(name) = lower(%s)
+        WHERE lower(name) = lower(%s) {tenant_clause}
         LIMIT 1
         """,
-        (normalized_term,),
+        exact_params,
     )
     exact = cursor.fetchone()
     if exact:
@@ -192,15 +238,16 @@ def _resolve_product(cursor, product_term: str) -> dict[str, Any] | None:
     if not safe_partial:
         return None
 
+    partial_params = (f"%{safe_partial}%", tenant_id) if tenant_clause else (f"%{safe_partial}%",)
     cursor.execute(
-        """
+        f"""
         SELECT id, name, category, created_at, updated_at
         FROM products
-        WHERE lower(name) LIKE lower(%s)
+        WHERE lower(name) LIKE lower(%s) {tenant_clause}
         ORDER BY length(name), name
         LIMIT 2
         """,
-        (f"%{safe_partial}%",),
+        partial_params,
     )
     matches = cursor.fetchall()
     if len(matches) == 1:
@@ -208,12 +255,24 @@ def _resolve_product(cursor, product_term: str) -> dict[str, Any] | None:
     return None
 
 
-def _live_evidence(question: str) -> dict[str, Any]:
+def _live_evidence(question: str, tenant_id: str | None = None) -> dict[str, Any]:
+    if tenant_id:
+        missing_tables = [
+            t for t in ("products", "sales", "predictions", "alerts")
+            if not _check_table_has_tenant_id(t)
+        ]
+        if missing_tables:
+            return {
+                "rows": [],
+                "source": "LIVE_DATABASE",
+                "error": f"Tenant isolation schema not established: missing 'tenant_id' on tables: {', '.join(missing_tables)}. Apply migration 005_tenant_isolation.sql.",
+                "tenant_id": tenant_id,
+            }
     product_id = _extract_product_reference(question)
     with _cursor() as cursor:
         product_term = _extract_product_term(question)
         if product_term:
-            product = _resolve_product(cursor, product_term)
+            product = _resolve_product(cursor, product_term, tenant_id=tenant_id)
             if not product:
                 return {
                     "rows": [],
@@ -221,10 +280,14 @@ def _live_evidence(question: str) -> dict[str, Any]:
                     "product_specific": True,
                     "product_term": product_term,
                     "product_found": False,
+                    "tenant_id": tenant_id,
                 }
 
-            cursor.execute(
-                """
+            sales_tenant = "AND s.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("sales")) else ""
+            pred_tenant = "AND pr.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("predictions")) else ""
+            alert_tenant = "AND a.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("alerts")) else ""
+
+            query_sql = f"""
                 SELECT
                   p.id,
                   p.name,
@@ -234,17 +297,17 @@ def _live_evidence(question: str) -> dict[str, Any]:
                   COALESCE((
                     SELECT SUM(s.quantity)
                     FROM sales s
-                    WHERE s.product_id = p.id
+                    WHERE s.product_id = p.id {sales_tenant}
                   ), 0) AS total_sales,
                   (
                     SELECT COUNT(*)
                     FROM sales s
-                    WHERE s.product_id = p.id
+                    WHERE s.product_id = p.id {sales_tenant}
                   ) AS sales_rows,
                   (
                     SELECT MAX(s.sale_date)
                     FROM sales s
-                    WHERE s.product_id = p.id
+                    WHERE s.product_id = p.id {sales_tenant}
                   ) AS latest_sale_at,
                   (
                     SELECT json_build_object(
@@ -262,7 +325,7 @@ def _live_evidence(question: str) -> dict[str, Any]:
                       'predicted_at', pr.predicted_at
                     )
                     FROM predictions pr
-                    WHERE pr.product_id = p.id
+                    WHERE pr.product_id = p.id {pred_tenant}
                     ORDER BY pr.predicted_at DESC
                     LIMIT 1
                   ) AS latest_prediction,
@@ -272,7 +335,7 @@ def _live_evidence(question: str) -> dict[str, Any]:
                       SELECT a.type, a.message, a.severity, a.percent_change,
                              a.is_active, a.created_at
                       FROM alerts a
-                      WHERE a.product_id = p.id
+                      WHERE a.product_id = p.id {alert_tenant}
                       ORDER BY a.created_at DESC
                       LIMIT 5
                     ) AS alert_row
@@ -282,7 +345,7 @@ def _live_evidence(question: str) -> dict[str, Any]:
                     FROM (
                       SELECT s.sale_date, s.quantity, s.created_at
                       FROM sales s
-                      WHERE s.product_id = p.id
+                      WHERE s.product_id = p.id {sales_tenant}
                       ORDER BY s.sale_date DESC
                       LIMIT 5
                     ) AS sale_row
@@ -290,9 +353,24 @@ def _live_evidence(question: str) -> dict[str, Any]:
                 FROM products p
                 WHERE p.id = %s
                 LIMIT 1
-                """,
-                (str(product["id"]),),
-            )
+            """
+            # Build parameters list for all tenant filters and the product id
+            params = []
+            if sales_tenant:
+                params.append(tenant_id)
+            if sales_tenant:
+                params.append(tenant_id)
+            if sales_tenant:
+                params.append(tenant_id)
+            if pred_tenant:
+                params.append(tenant_id)
+            if alert_tenant:
+                params.append(tenant_id)
+            if sales_tenant:
+                params.append(tenant_id)
+            params.append(str(product["id"]))
+
+            cursor.execute(query_sql, tuple(params))
             row = cursor.fetchone()
             if not row:
                 return {
@@ -301,17 +379,23 @@ def _live_evidence(question: str) -> dict[str, Any]:
                     "product_specific": True,
                     "product_term": product_term,
                     "product_found": False,
+                    "tenant_id": tenant_id,
                 }
+            result_row = serialize_value(dict(row))
             return {
-                "rows": [serialize_value(dict(row))],
+                "rows": [result_row],
                 "source": "LIVE_DATABASE",
                 "product_specific": True,
                 "product_term": product_term,
                 "product_found": True,
+                "tenant_id": tenant_id,
             }
         if product_id:
-            cursor.execute(
-                """
+            sales_tenant = "AND s.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("sales")) else ""
+            pred_tenant = "AND pr.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("predictions")) else ""
+            alert_tenant = "AND a.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("alerts")) else ""
+
+            query_sql = f"""
                 SELECT p.id, p.name, p.category,
                        COALESCE(SUM(s.quantity), 0) AS total_sales,
                        COUNT(s.id) AS sales_rows,
@@ -319,32 +403,54 @@ def _live_evidence(question: str) -> dict[str, Any]:
                        pr.confidence, pr.decision,
                        COUNT(a.id) FILTER (WHERE a.is_active) AS active_alerts
                 FROM products p
-                LEFT JOIN sales s ON s.product_id = p.id
-                LEFT JOIN predictions pr ON pr.product_id = p.id
-                LEFT JOIN alerts a ON a.product_id = p.id
+                LEFT JOIN sales s ON s.product_id = p.id {sales_tenant}
+                LEFT JOIN predictions pr ON pr.product_id = p.id {pred_tenant}
+                LEFT JOIN alerts a ON a.product_id = p.id {alert_tenant}
                 WHERE p.id = %s
                 GROUP BY p.id, pr.id
                 LIMIT 1
-                """,
-                (product_id,),
-            )
+            """
+            params = []
+            if sales_tenant:
+                params.append(tenant_id)
+            if pred_tenant:
+                params.append(tenant_id)
+            if alert_tenant:
+                params.append(tenant_id)
+            params.append(product_id)
+            cursor.execute(query_sql, tuple(params))
         else:
-            cursor.execute(
-                """
+            prod_tenant = "WHERE tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("products")) else ""
+            sales_tenant = "WHERE tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("sales")) else ""
+            pred_tenant = "WHERE tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("predictions")) else ""
+            alert_tenant = "AND tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("alerts")) else ""
+
+            query_sql = f"""
                 SELECT
-                  (SELECT COUNT(*) FROM products) AS products_count,
-                  (SELECT COUNT(*) FROM sales) AS sales_count,
-                  (SELECT COUNT(*) FROM predictions) AS predictions_count,
-                  (SELECT COUNT(*) FROM alerts WHERE is_active = true) AS active_alerts
-                """
-            )
+                  (SELECT COUNT(*) FROM products {prod_tenant}) AS products_count,
+                  (SELECT COUNT(*) FROM sales {sales_tenant}) AS sales_count,
+                  (SELECT COUNT(*) FROM predictions {pred_tenant}) AS predictions_count,
+                  (SELECT COUNT(*) FROM alerts WHERE is_active = true {alert_tenant}) AS active_alerts
+            """
+            params = []
+            if prod_tenant:
+                params.append(tenant_id)
+            if sales_tenant:
+                params.append(tenant_id)
+            if pred_tenant:
+                params.append(tenant_id)
+            if alert_tenant:
+                params.append(tenant_id)
+            cursor.execute(query_sql, tuple(params))
         row = cursor.fetchone()
     if not row:
-        return {"rows": [], "source": "LIVE_DATABASE"}
+        return {"rows": [], "source": "LIVE_DATABASE", "tenant_id": tenant_id}
+    result_row = serialize_value(dict(row))
     return {
-        "rows": [serialize_value(dict(row))],
+        "rows": [result_row],
         "source": "LIVE_DATABASE",
         "product_id": product_id,
+        "tenant_id": tenant_id,
     }
 
 
@@ -354,13 +460,14 @@ def _vector_available() -> bool:
         return bool(cursor.fetchone()["exists"])
 
 
-def _document_evidence(question: str) -> dict[str, Any]:
+def _document_evidence(question: str, tenant_id: str | None = None) -> dict[str, Any]:
     if not _vector_available():
         return {
             "rows": [],
             "source": "DOCUMENTATION",
             "available": False,
             "error": "pgvector extension is not enabled",
+            "tenant_id": tenant_id,
         }
     try:
         from sentence_transformers import SentenceTransformer
@@ -370,24 +477,45 @@ def _document_evidence(question: str) -> dict[str, Any]:
             "source": "DOCUMENTATION",
             "available": False,
             "error": "sentence-transformers is not installed",
+            "tenant_id": tenant_id,
+        }
+
+    if tenant_id and not _check_table_has_tenant_id("ai_document_chunks"):
+        return {
+            "rows": [],
+            "source": "DOCUMENTATION",
+            "available": False,
+            "error": "Tenant isolation schema not established: 'ai_document_chunks' table lacks 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            "tenant_id": tenant_id,
         }
 
     model_name = os.getenv("AI_ANALYST_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     embedding = _embedding_model(model_name).encode(question).tolist()
     with _cursor() as cursor:
+        where_conditions = ["embedding IS NOT NULL"]
+        query_params: list[Any] = [str(embedding)]
+        if tenant_id:
+            where_conditions.append("(tenant_id = %s OR tenant_id IS NULL)")
+            query_params.append(tenant_id)
+        else:
+            if _check_table_has_tenant_id("ai_document_chunks"):
+                where_conditions.append("tenant_id IS NULL")
+        query_params.extend([str(embedding), MAX_ROWS])
+
+        where_clause = " AND ".join(where_conditions)
         cursor.execute(
-            """
+            f"""
             SELECT id, document_key, title, section, content, version,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM ai_document_chunks
-            WHERE embedding IS NOT NULL
+            WHERE {where_clause}
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            (str(embedding), str(embedding), MAX_ROWS),
+            tuple(query_params),
         )
         rows = [serialize_value(dict(row)) for row in cursor.fetchall()]
-    return {"rows": rows, "source": "DOCUMENTATION", "available": True}
+    return {"rows": rows, "source": "DOCUMENTATION", "available": True, "tenant_id": tenant_id}
 
 
 @lru_cache(maxsize=2)
@@ -468,7 +596,11 @@ def _validated_plan(question: str) -> tuple[QueryPlan, bool]:
         return _fallback_plan(question), True
 
 
-def _resolve_plan_entities(cursor, entities: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+def _resolve_plan_entities(
+    cursor,
+    entities: list[str],
+    tenant_id: str | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     products = []
     missing = []
     seen = set()
@@ -477,7 +609,7 @@ def _resolve_plan_entities(cursor, entities: list[str]) -> tuple[list[dict[str, 
         if not candidate or candidate.lower() in seen:
             continue
         seen.add(candidate.lower())
-        product = _resolve_product(cursor, candidate)
+        product = _resolve_product(cursor, candidate, tenant_id=tenant_id)
         if product:
             products.append(product)
         else:
@@ -492,52 +624,53 @@ def _product_sql_evidence(
     start_date: date | None,
     end_date: date | None,
     task_kinds: set[str],
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     product_id = str(product["id"])
     sales = {}
+    sales_tenant = "AND tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("sales")) else ""
     if task_kinds & {"product_snapshot", "sales_summary", "sales_comparison"}:
-        cursor.execute(
-            """
+        sales_sql = f"""
             SELECT COALESCE(SUM(quantity), 0) AS total_sales,
                    COUNT(*) AS sales_rows,
                    MAX(sale_date) AS latest_sale_at,
                    COALESCE(AVG(quantity), 0) AS average_sale_quantity
             FROM sales
-            WHERE product_id = %s
+            WHERE product_id = %s {sales_tenant}
               AND (%s IS NULL OR sale_date >= %s)
               AND (%s IS NULL OR sale_date < %s)
-            """,
-            (product_id, start_date, start_date, end_date, end_date),
-        )
+        """
+        sales_params = (product_id, tenant_id, start_date, start_date, end_date, end_date) if sales_tenant else (product_id, start_date, start_date, end_date, end_date)
+        cursor.execute(sales_sql, sales_params)
         sales = serialize_value(dict(cursor.fetchone() or {}))
     prediction = None
+    pred_tenant = "AND tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("predictions")) else ""
     if task_kinds & {"product_snapshot", "predictions", "sales_comparison"}:
-        cursor.execute(
-            """
+        pred_sql = f"""
             SELECT predicted_demand, adjusted_prediction, percent_change,
                    confidence, season_tag, decision, impact, reason,
                    prediction_source, predicted_at
             FROM predictions
-            WHERE product_id = %s
+            WHERE product_id = %s {pred_tenant}
             ORDER BY predicted_at DESC
             LIMIT 1
-            """,
-            (product_id,),
-        )
+        """
+        pred_params = (product_id, tenant_id) if pred_tenant else (product_id,)
+        cursor.execute(pred_sql, pred_params)
         row = cursor.fetchone()
         prediction = serialize_value(dict(row)) if row else None
     alerts = []
+    alert_tenant = "AND tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("alerts")) else ""
     if task_kinds & {"product_snapshot", "alerts"}:
-        cursor.execute(
-            """
+        alert_sql = f"""
             SELECT type, message, severity, percent_change, is_active, created_at
             FROM alerts
-            WHERE product_id = %s
+            WHERE product_id = %s {alert_tenant}
             ORDER BY created_at DESC
             LIMIT 5
-            """,
-            (product_id,),
-        )
+        """
+        alert_params = (product_id, tenant_id) if alert_tenant else (product_id,)
+        cursor.execute(alert_sql, alert_params)
         alerts = [serialize_value(dict(row)) for row in cursor.fetchall()]
     return {
         "id": product_id,
@@ -551,13 +684,26 @@ def _product_sql_evidence(
     }
 
 
-def _planned_live_evidence(plan: QueryPlan) -> dict[str, Any]:
+def _planned_live_evidence(plan: QueryPlan, tenant_id: str | None = None) -> dict[str, Any]:
+    if tenant_id:
+        missing_tables = [
+            t for t in ("products", "sales", "predictions", "alerts")
+            if not _check_table_has_tenant_id(t)
+        ]
+        if missing_tables:
+            return {
+                "rows": [],
+                "source": "LIVE_DATABASE",
+                "product_specific": False,
+                "error": f"Tenant isolation schema not established: missing 'tenant_id' on tables: {', '.join(missing_tables)}. Apply migration 005_tenant_isolation.sql.",
+                "tenant_id": tenant_id,
+            }
     entities = list(dict.fromkeys(plan.entities))
     task_kinds = {task.kind for task in plan.retrieval_tasks}
     if not entities and "sales_summary" not in task_kinds:
-        return {"rows": [], "source": "LIVE_DATABASE", "product_specific": False}
+        return {"rows": [], "source": "LIVE_DATABASE", "product_specific": False, "tenant_id": tenant_id}
     with _cursor() as cursor:
-        products, missing = _resolve_plan_entities(cursor, entities)
+        products, missing = _resolve_plan_entities(cursor, entities, tenant_id=tenant_id)
         if entities and not products:
             return {
                 "rows": [],
@@ -566,6 +712,7 @@ def _planned_live_evidence(plan: QueryPlan) -> dict[str, Any]:
                 "product_term": entities[0],
                 "product_found": False,
                 "missing_entities": missing,
+                "tenant_id": tenant_id,
             }
         rows = [
             _product_sql_evidence(
@@ -574,21 +721,23 @@ def _planned_live_evidence(plan: QueryPlan) -> dict[str, Any]:
                 start_date=plan.start_date,
                 end_date=plan.end_date,
                 task_kinds=task_kinds,
+                tenant_id=tenant_id,
             )
             for product in products
         ]
         if not entities and "sales_summary" in task_kinds:
-            cursor.execute(
-                """
+            sales_tenant = "AND s.tenant_id = %s" if (tenant_id and _check_table_has_tenant_id("sales")) else ""
+            summary_sql = f"""
                 SELECT COUNT(*) AS products_count,
                        COALESCE(SUM(s.quantity), 0) AS sales_count,
                        COUNT(DISTINCT s.product_id) AS products_with_sales
                 FROM sales s
                 WHERE (%s IS NULL OR s.sale_date >= %s)
                   AND (%s IS NULL OR s.sale_date < %s)
-                """,
-                (plan.start_date, plan.start_date, plan.end_date, plan.end_date),
-            )
+                  {sales_tenant}
+            """
+            summary_params = (plan.start_date, plan.start_date, plan.end_date, plan.end_date, tenant_id) if sales_tenant else (plan.start_date, plan.start_date, plan.end_date, plan.end_date)
+            cursor.execute(summary_sql, summary_params)
             rows = [serialize_value(dict(cursor.fetchone() or {}))]
     return {
         "rows": rows[:MAX_ROWS],
@@ -596,11 +745,12 @@ def _planned_live_evidence(plan: QueryPlan) -> dict[str, Any]:
         "product_specific": bool(entities),
         "product_found": bool(products) if entities else None,
         "missing_entities": missing,
+        "tenant_id": tenant_id,
     }
 
 
-def _planned_document_evidence(question: str, plan: QueryPlan) -> dict[str, Any]:
-    return _document_evidence(question)
+def _planned_document_evidence(question: str, plan: QueryPlan, tenant_id: str | None = None) -> dict[str, Any]:
+    return _safe_call(_document_evidence, question, tenant_id=tenant_id)
 
 
 def _plan_category(plan: QueryPlan) -> str:
@@ -612,13 +762,19 @@ def _plan_category(plan: QueryPlan) -> str:
     return "documentation_semantic_knowledge"
 
 
-def answer_question(question: str) -> dict[str, Any]:
+def answer_question(
+    question: str,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     plan, planning_fallback = _validated_plan(question)
     logger.info(
-        "AI Analyst query plan ready fallback=%s tasks=%s duration_ms=%.1f",
+        "AI Analyst query plan ready fallback=%s tasks=%s tenant=%s user=%s duration_ms=%.1f",
         planning_fallback,
         len(plan.retrieval_tasks),
+        tenant_id,
+        user_id,
         (time.perf_counter() - started) * 1000,
     )
     if plan.clarification and not plan.retrieval_tasks:
@@ -635,14 +791,14 @@ def answer_question(question: str) -> dict[str, Any]:
         }
     retrieval_started = time.perf_counter()
     live = (
-        _live_evidence(question)
+        _safe_call(_live_evidence, question, tenant_id=tenant_id)
         if planning_fallback and "live_sql" in plan.evidence_sources
-        else _planned_live_evidence(plan)
+        else _safe_call(_planned_live_evidence, plan, tenant_id=tenant_id)
         if "live_sql" in plan.evidence_sources
         else {"rows": []}
     )
     docs = (
-        _planned_document_evidence(question, plan)
+        _safe_call(_planned_document_evidence, question, plan, tenant_id=tenant_id)
         if "vector_docs" in plan.evidence_sources
         else {"rows": []}
     )
@@ -688,7 +844,12 @@ def answer_question(question: str) -> dict[str, Any]:
                     "only where recorded; no change history can be inferred."
                 ),
                 "category": category,
-                "sources": [{"type": "live_database", "label": "PostgreSQL product record"}],
+                "sources": [
+                    {
+                        "type": "live_database",
+                        "label": "PostgreSQL product record",
+                    }
+                ],
                 "provenance": {
                     "liveData": True,
                     "documentation": False,
@@ -701,8 +862,10 @@ def answer_question(question: str) -> dict[str, Any]:
             "No retrieval evidence is available; configure pgvector/document embeddings "
             "or ask a question about live database metrics"
         )
+    tenant_header = f"TENANT_CONTEXT: tenant_id='{tenant_id}', user_id='{user_id}'\n" if (tenant_id or user_id) else ""
     context = (
-        "QUERY_PLAN:\n"
+        tenant_header
+        + "QUERY_PLAN:\n"
         + str(plan.model_dump(mode="json"))
         + "\n\n"
         + evidence_context

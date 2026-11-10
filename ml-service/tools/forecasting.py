@@ -30,15 +30,24 @@ def get_demand_forecast(
     adapter = db or DatabaseAdapter()
     product_ref = payload.product_id.strip()
 
+    if not (adapter.has_tenant_column("products") and adapter.has_tenant_column("sales") and adapter.has_tenant_column("predictions")):
+        return DemandForecastOutput(
+            success=False,
+            product_id=product_ref,
+            error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
+            limitations=["Database schema not ready for tenant-isolated execution"],
+        )
+
     # Step 1: Resolve product
     prod_sql = """
         SELECT id, name, category, legacy_mongo_id
         FROM products
-        WHERE id::text = %s OR legacy_mongo_id = %s OR lower(name) = lower(%s)
+        WHERE (id::text = %s OR legacy_mongo_id = %s OR lower(name) = lower(%s))
+          AND tenant_id = %s
         LIMIT 1
     """
     try:
-        product = adapter.query_one(prod_sql, (product_ref, product_ref, product_ref))
+        product = adapter.query_one(prod_sql, (product_ref, product_ref, product_ref, tenant_id))
         if not product:
             return DemandForecastOutput(
                 success=False,
@@ -54,10 +63,10 @@ def get_demand_forecast(
         sales_sql = """
             SELECT sale_date AS date, quantity
             FROM sales
-            WHERE product_id = %s
+            WHERE product_id = %s AND tenant_id = %s
             ORDER BY sale_date ASC
         """
-        sales_rows = adapter.query(sales_sql, (product_id,))
+        sales_rows = adapter.query(sales_sql, (product_id, tenant_id))
         historical_points = len(sales_rows)
 
         # Step 3: Query latest persisted prediction if available
@@ -66,11 +75,11 @@ def get_demand_forecast(
                    confidence, decision, impact, keyword, score, reason,
                    prediction_source, predicted_at
             FROM predictions
-            WHERE product_id = %s
+            WHERE product_id = %s AND tenant_id = %s
             ORDER BY predicted_at DESC
             LIMIT 1
         """
-        persisted_pred = adapter.query_one(pred_sql, (product_id,))
+        persisted_pred = adapter.query_one(pred_sql, (product_id, tenant_id))
 
         limitations: list[str] = []
         evidence_list = []
