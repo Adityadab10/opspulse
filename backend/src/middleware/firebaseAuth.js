@@ -20,7 +20,7 @@ try {
 }
 
 export const createFirebaseAuthMiddleware = ({ verifyIdToken } = {}) => {
-  const verify = verifyIdToken || ((token) => firebaseAuth.verifyIdToken(token));
+  const verify = verifyIdToken || ((token) => firebaseAuth.verifyIdToken(token, true));
 
   return async (req, res, next) => {
     if (!verifyIdToken && (!firebaseAuth || initializationError)) {

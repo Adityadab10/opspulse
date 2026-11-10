@@ -6,6 +6,7 @@ import {
   getAllSales,
   getProductById,
 } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const computeTrend = (salesDocs, recentDays = 30) => {
   if (!salesDocs || salesDocs.length === 0) {
@@ -47,10 +48,11 @@ const computeTrend = (salesDocs, recentDays = 30) => {
 
 const getSummary = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const [totalProductsResult, activeAlertsResult, allSales] = await Promise.all([
-      countProducts(),
-      countAllActiveAlerts(),
-      getAllSales(),
+      countProducts(tenantId),
+      countAllActiveAlerts(tenantId),
+      getAllSales(tenantId),
     ]);
 
     const totalProducts = totalProductsResult;
@@ -113,7 +115,7 @@ const getSummary = async (req, res) => {
     }
 
     const topIncreasingProducts = await Promise.all(topIncreasing.map(async (r) => {
-      const prod = await getProductById(r.productId);
+      const prod = await getProductById(tenantId, r.productId);
       return {
         name: prod?.name || "Unknown Product",
         quantity: r.totalQty,
@@ -123,7 +125,7 @@ const getSummary = async (req, res) => {
     }));
 
     const topDecreasingProducts = await Promise.all(topDecreasing.map(async (r) => {
-      const prod = await getProductById(r.productId);
+      const prod = await getProductById(tenantId, r.productId);
       return {
         name: prod?.name || "Unknown Product",
         quantity: r.totalQty,
@@ -149,16 +151,14 @@ const getSummary = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Dashboard summary error:", error.message);
-    return res.status(500).json({
-      message: "Failed to fetch dashboard summary",
-      error: error.message,
-    });
+    console.error("Dashboard summary error:", error?.code || error?.name || "unknown");
+    return sendBackendError(res, "Failed to fetch dashboard summary", error);
   }
 };
 
 const getTrends = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const now = new Date();
     const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
@@ -168,7 +168,7 @@ const getTrends = async (req, res) => {
     });
 
     // Get all sales data ordered by date
-    const allSales = await getAllSales();
+    const allSales = await getAllSales(tenantId);
 
     // Filter sales within the 6-month window (UTC)
     const filteredSales = allSales.filter((s) => {
@@ -195,7 +195,7 @@ const getTrends = async (req, res) => {
     // Get product names for all product IDs
     const productIds = [...productMonthMap.keys()];
     const productNameMap = new Map(
-      (await getAllProducts()).map((product) => [product.id, product.name]),
+      (await getAllProducts(tenantId)).map((product) => [product.id, product.name]),
     );
 
     // Build response rows
@@ -220,11 +220,8 @@ const getTrends = async (req, res) => {
       demandTrendSummary,
     });
   } catch (error) {
-    console.error("Dashboard trends error:", error.message);
-    return res.status(500).json({
-      message: "Failed to fetch trends",
-      error: error.message,
-    });
+    console.error("Dashboard trends error:", error?.code || error?.name || "unknown");
+    return sendBackendError(res, "Failed to fetch trends", error);
   }
 };
 
@@ -236,18 +233,16 @@ const getDistribution = async (req, res) => {
       reduce: 0,
     });
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch distribution",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to fetch distribution", error);
   }
 };
 
 const getProductAnalysis = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const [products, allSales] = await Promise.all([
-      getAllProducts(),
-      getAllSales(),
+      getAllProducts(tenantId),
+      getAllSales(tenantId),
     ]);
 
     // Build sales map: productId -> aggregated sales periods
@@ -282,11 +277,8 @@ const getProductAnalysis = async (req, res) => {
 
     return res.status(200).json(analysis);
   } catch (error) {
-    console.error("Product analysis error:", error.message);
-    return res.status(500).json({
-      message: "Failed to fetch product analysis",
-      error: error.message,
-    });
+    console.error("Product analysis error:", error?.code || error?.name || "unknown");
+    return sendBackendError(res, "Failed to fetch product analysis", error);
   }
 };
 

@@ -4,6 +4,7 @@ import {
   getRecentActiveAlerts,
   isProductReference,
 } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const mapCreatedAlert = ({ alert, product }) => ({
   _id: alert.id,
@@ -24,7 +25,7 @@ const mapCreatedAlert = ({ alert, product }) => ({
 // GET latest active alerts
 export const getAlerts = async (req, res) => {
   try {
-    const alerts = await getRecentActiveAlerts();
+    const alerts = await getRecentActiveAlerts(req.authContext.tenantId);
 
     const mappedAlerts = alerts.map((a) => ({
       _id: a.id,
@@ -42,10 +43,7 @@ export const getAlerts = async (req, res) => {
 
     return res.status(200).json(mappedAlerts);
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch alerts",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to fetch alerts", error);
   }
 };
 
@@ -65,7 +63,7 @@ export const createAlert = async (req, res) => {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const created = await createPostgresAlert(productId, {
+    const created = await createPostgresAlert(req.authContext.tenantId, productId, {
       type,
       message: String(message).trim(),
       severity: severity || "MEDIUM",
@@ -79,10 +77,7 @@ export const createAlert = async (req, res) => {
 
     return res.status(201).json(mapCreatedAlert(created));
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to create alert",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to create alert", error);
   }
 };
 
@@ -91,7 +86,7 @@ export const deactivateAlert = async (req, res) => {
   try {
     const { alertId } = req.params;
 
-    const alert = await deactivateAlertById(alertId);
+    const alert = await deactivateAlertById(req.authContext.tenantId, alertId);
 
     if (!alert) {
       return res.status(404).json({ message: "Alert not found" });
@@ -111,9 +106,6 @@ export const deactivateAlert = async (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to deactivate alert",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to deactivate alert", error);
   }
 };

@@ -1,5 +1,6 @@
 import { normalizeCsvRow, parseCsvBuffer } from "../helpers/csvHelpers.js";
 import { importCsvSales } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 export const uploadSalesCsv = async (req, res) => {
   try {
@@ -44,8 +45,15 @@ export const uploadSalesCsv = async (req, res) => {
     }
 
     const { productsCreated, salesRecordsInserted } = await importCsvSales(
+      req.authContext.tenantId,
       Array.from(uniqueProducts.values()),
       validRows,
+      {
+        filename: req.file.originalname,
+        recordsProcessed: rawRows.length,
+        recordsValid: validRows.length,
+        recordsInvalid: invalidRows.length,
+      },
     );
 
     const summary = {
@@ -62,9 +70,6 @@ export const uploadSalesCsv = async (req, res) => {
       summary,
     });
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to process CSV upload",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to process CSV upload", error);
   }
 };

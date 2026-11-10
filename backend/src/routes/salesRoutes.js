@@ -1,9 +1,20 @@
 import express from "express";
 import { addSales, getSalesByProduct } from "../controllers/salesController.js";
+import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireTenantContext } from "../middleware/tenantContext.js";
 
-const router = express.Router();
+export const createSalesRouter = ({
+  authMiddleware = requireFirebaseAuth,
+  tenantMiddleware = requireTenantContext,
+} = {}) => {
+  const router = express.Router();
 
-router.post("/", addSales);
-router.get("/:productId", getSalesByProduct);
+  router.use(authMiddleware, tenantMiddleware);
 
-export default router;
+  router.post("/", addSales);
+  router.get("/:productId", getSalesByProduct);
+
+  return router;
+};
+
+export default createSalesRouter();

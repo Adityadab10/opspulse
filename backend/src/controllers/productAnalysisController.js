@@ -1,5 +1,6 @@
 import { calculatePercentChange, roundTo } from "../helpers/analytics.js";
 import { getAllProducts, getAllSales } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const toMonthKey = (dateValue) => {
   const d = new Date(dateValue);
@@ -8,7 +9,8 @@ const toMonthKey = (dateValue) => {
 
 export const getProductAnalysis = async (req, res) => {
   try {
-    const [products, sales] = await Promise.all([getAllProducts(), getAllSales()]);
+    const tenantId = req.authContext.tenantId;
+    const [products, sales] = await Promise.all([getAllProducts(tenantId), getAllSales(tenantId)]);
     const salesByProduct = new Map();
     for (const sale of sales) {
       const rows = salesByProduct.get(sale.product_id) || [];
@@ -54,9 +56,6 @@ export const getProductAnalysis = async (req, res) => {
 
     return res.status(200).json(analysis);
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch product analysis",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to fetch product analysis", error);
   }
 };

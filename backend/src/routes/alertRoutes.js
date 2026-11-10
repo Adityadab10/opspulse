@@ -4,11 +4,22 @@ import {
   createAlert,
   deactivateAlert,
 } from "../controllers/alertController.js";
+import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireTenantContext } from "../middleware/tenantContext.js";
 
-const router = express.Router();
+export const createAlertRouter = ({
+  authMiddleware = requireFirebaseAuth,
+  tenantMiddleware = requireTenantContext,
+} = {}) => {
+  const router = express.Router();
 
-router.get("/", getAlerts);
-router.post("/", createAlert);
-router.patch("/:alertId/deactivate", deactivateAlert);
+  router.use(authMiddleware, tenantMiddleware);
 
-export default router;
+  router.get("/", getAlerts);
+  router.post("/", createAlert);
+  router.patch("/:alertId/deactivate", deactivateAlert);
+
+  return router;
+};
+
+export default createAlertRouter();

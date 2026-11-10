@@ -1,9 +1,20 @@
 import express from "express";
 import { getSummary, getTrends } from "../controllers/dashboardController.js";
+import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireTenantContext } from "../middleware/tenantContext.js";
 
-const router = express.Router();
+export const createDashboardRouter = ({
+  authMiddleware = requireFirebaseAuth,
+  tenantMiddleware = requireTenantContext,
+} = {}) => {
+  const router = express.Router();
 
-router.get("/summary", getSummary);
-router.get("/trends", getTrends);
+  router.use(authMiddleware, tenantMiddleware);
 
-export default router;
+  router.get("/summary", getSummary);
+  router.get("/trends", getTrends);
+
+  return router;
+};
+
+export default createDashboardRouter();

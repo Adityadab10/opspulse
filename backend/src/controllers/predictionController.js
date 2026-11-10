@@ -1,5 +1,7 @@
 import { generatePredictionForProduct } from "../services/predictionService.js";
-import pool from "../config/database.js";
+import { requestMlComparison, requestMlPrediction } from "../services/predictionMlClient.js";
+import { getRequestContext } from "../services/requestContext.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 import {
   deleteActiveAlertsForProduct,
   getPredictionByProductId,
@@ -7,18 +9,19 @@ import {
   isProductReference,
   resolveProduct,
   upsertAlertByProductAndType,
+  upsertPrediction,
 } from "../config/postgres.js";
 
-const ML_PREDICT_URL = process.env.ML_PREDICT_URL || "http://localhost:5002/predict";
-const ML_COMPARE_URL = process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models";
 const ML_TIMEOUT_MS = Number(process.env.ML_TIMEOUT_MS || 10000);
-const ML_COMPARE_TIMEOUT_MS = Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000);
 const ML_COMPARE_CONCURRENCY = Math.max(1, Number(process.env.ML_COMPARE_CONCURRENCY || 4));
 const ML_PREDICTION_CONCURRENCY = Math.max(1, Number(process.env.ML_PREDICTION_CONCURRENCY || 4));
 const PREDICTION_CACHE_TTL_MS = Number(process.env.PREDICTION_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const predictionCache = new Map();
 const ALL_PREDICTIONS_CACHE_KEY = "all-predictions";
+
+const isMlAuthorizationFailure = (error) => error?.code === "MISSING_INTERNAL_TOKEN"
+  || (error?.code === "ML_SERVICE_REJECTED" && [401, 403].includes(error.status));
 
 const nowIso = () => new Date().toISOString();
 
@@ -27,6 +30,7 @@ const logEvent = (level, message, meta = {}) => {
     ts: nowIso(),
     level,
     message,
+    correlationId: getRequestContext().correlationId,
     ...meta,
   };
 
@@ -126,13 +130,15 @@ const isTruthy = (value) => {
 };
 
 const getCacheValue = (key) => {
-  const cached = predictionCache.get(key);
+  const tenantId = getRequestContext().tenantId || "untrusted";
+  const scopedKey = `${tenantId}:${key}`;
+  const cached = predictionCache.get(scopedKey);
   if (!cached) {
     return null;
   }
 
   if (Date.now() >= cached.expiresAt) {
-    predictionCache.delete(key);
+    predictionCache.delete(scopedKey);
     return null;
   }
 
@@ -140,14 +146,21 @@ const getCacheValue = (key) => {
 };
 
 const setCacheValue = (key, value) => {
-  predictionCache.set(key, {
+  const tenantId = getRequestContext().tenantId || "untrusted";
+  predictionCache.set(`${tenantId}:${key}`, {
     value,
     expiresAt: Date.now() + PREDICTION_CACHE_TTL_MS,
   });
 };
 
+const deleteCacheValue = (key) => {
+  const tenantId = getRequestContext().tenantId || "untrusted";
+  predictionCache.delete(`${tenantId}:${key}`);
+};
+
 const invalidateAllPredictionsCache = () => {
-  predictionCache.delete(ALL_PREDICTIONS_CACHE_KEY);
+  const tenantId = getRequestContext().tenantId || "untrusted";
+  predictionCache.delete(`${tenantId}:${ALL_PREDICTIONS_CACHE_KEY}`);
 };
 
 const isFreshPrediction = (predictedAt) => {
@@ -386,89 +399,6 @@ const isRuleBasedPrediction = (predictionLike) => {
   return source === "rule-based";
 };
 
-const callMlPrediction = async (productId) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ML_TIMEOUT_MS);
-
-  try {
-    if (typeof fetch !== "function") {
-      throw new Error("Global fetch is not available in this Node runtime");
-    }
-
-    const response = await fetch(ML_PREDICT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId: String(productId) }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      let details = "";
-      try {
-        const maybeJson = await response.json();
-        if (maybeJson && typeof maybeJson === "object") {
-          details = String(maybeJson.error || maybeJson.message || "").trim();
-        }
-      } catch {
-        try {
-          details = String(await response.text()).trim();
-        } catch {
-          details = "";
-        }
-      }
-
-      const suffix = details ? `: ${details}` : "";
-      throw new Error(`ML service responded with status ${response.status}${suffix}`);
-    }
-
-    const payload = await response.json();
-    return payload;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
-const callMlComparison = async (productId) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ML_COMPARE_TIMEOUT_MS);
-
-  try {
-    if (typeof fetch !== "function") {
-      throw new Error("Global fetch is not available in this Node runtime");
-    }
-
-    const response = await fetch(ML_COMPARE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId: String(productId) }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      let details = "";
-      try {
-        const maybeJson = await response.json();
-        if (maybeJson && typeof maybeJson === "object") {
-          details = String(maybeJson.error || maybeJson.message || "").trim();
-        }
-      } catch {
-        try {
-          details = String(await response.text()).trim();
-        } catch {
-          details = "";
-        }
-      }
-
-      const suffix = details ? `: ${details}` : "";
-      throw new Error(`ML service responded with status ${response.status}${suffix}`);
-    }
-
-    return await response.json();
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
 const normalizeComparisonPayload = (payload, product) => {
   const prophetPrediction = payload?.prophetPrediction ?? payload?.prophet_prediction;
   const arimaPrediction = payload?.arimaPrediction ?? payload?.arima_prediction;
@@ -552,62 +482,18 @@ const buildUnifiedPrediction = ({ product, rulePrediction, mlPrediction, mlFailu
     predictedAt: new Date(),
   };
 };
-const persistPrediction = async (productId, pgProductId, unifiedPrediction) => {
-  const { rows } = await pool.query(`
-    INSERT INTO predictions (product_id, predicted_demand, avg_sales, percent_change, confidence, season_tag, rule_prediction, ml_prediction, adjusted_prediction, decision, impact, keyword, score, source_headline, source_headlines, matched_keywords, reason, contributing_factors, prediction_source, predicted_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
-    ON CONFLICT (product_id) DO UPDATE SET
-      predicted_demand = EXCLUDED.predicted_demand,
-      avg_sales = EXCLUDED.avg_sales,
-      percent_change = EXCLUDED.percent_change,
-      confidence = EXCLUDED.confidence,
-      season_tag = EXCLUDED.season_tag,
-      rule_prediction = EXCLUDED.rule_prediction,
-      ml_prediction = EXCLUDED.ml_prediction,
-      adjusted_prediction = EXCLUDED.adjusted_prediction,
-      decision = EXCLUDED.decision,
-      impact = EXCLUDED.impact,
-      keyword = EXCLUDED.keyword,
-      score = EXCLUDED.score,
-      source_headline = EXCLUDED.source_headline,
-      source_headlines = EXCLUDED.source_headlines,
-      matched_keywords = EXCLUDED.matched_keywords,
-      reason = EXCLUDED.reason,
-      contributing_factors = EXCLUDED.contributing_factors,
-      prediction_source = EXCLUDED.prediction_source,
-      predicted_at = now()
-    RETURNING id, product_id, predicted_demand, rule_prediction, ml_prediction, adjusted_prediction, avg_sales, percent_change, confidence, season_tag, decision, impact, keyword, score, source_headline, source_headlines, matched_keywords, reason, contributing_factors, prediction_source, predicted_at
-  `, [
-    pgProductId,
-    unifiedPrediction.predictedDemand,
-    unifiedPrediction.avgSales,
-    unifiedPrediction.percentChange,
-    unifiedPrediction.confidence,
-    unifiedPrediction.seasonTag,
-    unifiedPrediction.rulePrediction,
-    unifiedPrediction.mlPrediction,
-    unifiedPrediction.adjustedPrediction,
-    unifiedPrediction.decision,
-    unifiedPrediction.impact,
-    unifiedPrediction.keyword,
-    unifiedPrediction.score,
-    unifiedPrediction.sourceHeadline,
-    unifiedPrediction.sourceHeadlines,
-    unifiedPrediction.matchedKeywords,
-    unifiedPrediction.reason,
-    unifiedPrediction.contributingFactors,
-    unifiedPrediction.predictionSource,
-  ]);
-
-  const saved = mapPostgresPredictionToDocumentShape(rows[0]);
+const persistPrediction = async (tenantId, productId, pgProductId, unifiedPrediction) => {
+  const saved = mapPostgresPredictionToDocumentShape(
+    await upsertPrediction(tenantId, pgProductId, unifiedPrediction),
+  );
 
   // Auto-generate alerts based on prediction results
-  await generateAlertForProduct(productId, saved);
+  await generateAlertForProduct(tenantId, productId, saved);
 
   return mapPredictionDocToResponse(saved, unifiedPrediction.productId);
 };
 
-const generateAlertForProduct = async (productId, predictionDoc) => {
+const generateAlertForProduct = async (tenantId, productId, predictionDoc) => {
   const percentChange = toNumber(predictionDoc.percentChange, 0);
   const confidence = predictionDoc.confidence;
   const decision = predictionDoc.decision;
@@ -619,7 +505,7 @@ const generateAlertForProduct = async (productId, predictionDoc) => {
 
   if (!significantChange && !meaningfulConfidence) {
     // Clear any existing alerts if the situation has normalized
-    await deleteActiveAlertsForProduct(productId);
+    await deleteActiveAlertsForProduct(tenantId, productId);
     return;
   }
 
@@ -652,12 +538,12 @@ const generateAlertForProduct = async (productId, predictionDoc) => {
     severity = "LOW";
   } else {
     // Clear alerts if no significant condition met
-    await deleteActiveAlertsForProduct(productId);
+    await deleteActiveAlertsForProduct(tenantId, productId);
     return;
   }
 
   // Upsert the alert (matching on productId + type)
-  await upsertAlertByProductAndType(productId, {
+  await upsertAlertByProductAndType(tenantId, productId, {
     type,
       message,
       severity,
@@ -667,6 +553,7 @@ const generateAlertForProduct = async (productId, predictionDoc) => {
 };
 
 const getPredictionForProduct = async ({
+  tenantId,
   product,
   forceRefresh = false,
   preloadedPrediction = null,
@@ -686,7 +573,7 @@ const getPredictionForProduct = async ({
       logEvent("info", "Ignoring cached rule-based fallback; attempting ML refresh", {
         productId,
       });
-      predictionCache.delete(cacheKey);
+      deleteCacheValue(cacheKey);
     }
   }
 
@@ -703,17 +590,20 @@ const getPredictionForProduct = async ({
     });
   }
 
-  const rulePrediction = await generatePredictionForProduct(productId);
+  const rulePrediction = await generatePredictionForProduct(tenantId, productId);
 
   let mlPrediction = null;
   let mlFailure = null;
   try {
-    mlPrediction = await callMlPrediction(productId);
+    mlPrediction = await requestMlPrediction(productId);
   } catch (mlError) {
+    if (isMlAuthorizationFailure(mlError)) {
+      throw mlError;
+    }
     mlFailure = classifyMlFailure(mlError);
     logEvent("warn", "ML prediction failed, using rule-based fallback", {
       productId,
-      error: mlError?.message || "unknown error",
+      errorType: mlError?.code || mlError?.name || "unknown",
       fallbackCause: mlFailure.type,
     });
   }
@@ -725,7 +615,7 @@ const getPredictionForProduct = async ({
     mlFailure,
   });
 
-  const savedPrediction = await persistPrediction(productId, pgProductId || productId, unified);
+  const savedPrediction = await persistPrediction(tenantId, productId, pgProductId || productId, unified);
   setCacheValue(cacheKey, savedPrediction);
   invalidateAllPredictionsCache();
 
@@ -739,6 +629,7 @@ const getPredictionForProduct = async ({
 
 export const predictByProduct = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const { productId } = req.params;
     const forceRefresh = isTruthy(req.query.refresh);
 
@@ -746,12 +637,12 @@ export const predictByProduct = async (req, res) => {
       return sendError(res, 400, "Invalid productId");
     }
 
-    const postgresProduct = await resolveProduct(productId);
+    const postgresProduct = await resolveProduct(tenantId, productId);
     if (!postgresProduct) {
       return sendError(res, 404, "Product not found");
     }
 
-    const predictionFromPg = await getPredictionByProductId(postgresProduct.id);
+    const predictionFromPg = await getPredictionByProductId(tenantId, postgresProduct.id);
 
     if (predictionFromPg) {
       const prediction = mapPredictionDocToResponse(predictionFromPg, postgresProduct);
@@ -762,6 +653,7 @@ export const predictByProduct = async (req, res) => {
     }
 
     const prediction = await getPredictionForProduct({
+      tenantId,
       product: postgresProduct,
       forceRefresh,
       preloadedPrediction: null,
@@ -775,17 +667,18 @@ export const predictByProduct = async (req, res) => {
   } catch (error) {
     logEvent("error", "Failed to generate prediction for product", {
       productId: req.params?.productId,
-      error: error.message,
+      errorType: error?.code || error?.name || "unknown",
     });
 
-    return sendError(res, 500, "Failed to generate prediction for product", error.message);
+    return sendBackendError(res, "Failed to generate prediction for product", error);
   }
 };
 
 export const predictAllProducts = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const forceRefresh = isTruthy(req.query.refresh);
-    const products = await getAllProducts();
+    const products = await getAllProducts(tenantId);
 
     if (!products.length) {
       return sendSuccess(
@@ -804,13 +697,14 @@ export const predictAllProducts = async (req, res) => {
     const settled = await settleWithConcurrency(
       products,
       async (product) => {
-        const predictionFromPg = await getPredictionByProductId(product.id);
+        const predictionFromPg = await getPredictionByProductId(tenantId, product.id);
 
         if (predictionFromPg) {
           return mapPredictionDocToResponse(predictionFromPg, product);
         }
 
         return getPredictionForProduct({
+          tenantId,
           product,
           forceRefresh,
           preloadedPrediction: null,
@@ -827,6 +721,11 @@ export const predictAllProducts = async (req, res) => {
     const failed = settled
       .filter((r) => r.status === "rejected")
       .map((r) => r.reason?.message || "Unknown error");
+
+    const tenantSchemaFailure = settled.find(
+      (r) => r.status === "rejected" && r.reason?.code === "TENANT_SCHEMA_UNAVAILABLE",
+    );
+    if (tenantSchemaFailure) throw tenantSchemaFailure.reason;
 
     return sendSuccess(
       res,
@@ -845,15 +744,16 @@ export const predictAllProducts = async (req, res) => {
     );
   } catch (error) {
     logEvent("error", "Failed to run bulk predictions", {
-      error: error.message,
+      errorType: error?.code || error?.name || "unknown",
     });
 
-    return sendError(res, 500, "Failed to run bulk predictions", error.message);
+    return sendBackendError(res, "Failed to run bulk predictions", error);
   }
 };
 
 export const getUnifiedPredictions = async (req, res) => {
   try {
+    const tenantId = req.authContext.tenantId;
     const forceRefresh = isTruthy(req.query.refresh);
 
     if (!forceRefresh) {
@@ -873,7 +773,7 @@ export const getUnifiedPredictions = async (req, res) => {
       }
     }
 
-    const products = await getAllProducts();
+    const products = await getAllProducts(tenantId);
 
     if (!Array.isArray(products) || products.length === 0) {
       return sendSuccess(res, 200, [], {
@@ -886,13 +786,14 @@ export const getUnifiedPredictions = async (req, res) => {
     const settled = await settleWithConcurrency(
       products,
       async (product) => {
-        const predictionFromPg = await getPredictionByProductId(product.id);
+        const predictionFromPg = await getPredictionByProductId(tenantId, product.id);
 
         if (predictionFromPg) {
           return mapPredictionDocToResponse(predictionFromPg, product);
         }
 
         return getPredictionForProduct({
+          tenantId,
           product,
           forceRefresh,
           preloadedPrediction: null,
@@ -908,7 +809,17 @@ export const getUnifiedPredictions = async (req, res) => {
 
     const failed = settled
       .filter((result) => result.status === "rejected")
-      .map((result) => result.reason?.message || "Unknown error");
+      .map(() => "Prediction unavailable");
+
+    const tenantSchemaFailure = settled.find(
+      (result) => result.status === "rejected" && result.reason?.code === "TENANT_SCHEMA_UNAVAILABLE",
+    );
+    if (tenantSchemaFailure) throw tenantSchemaFailure.reason;
+
+    const mlAuthorizationFailure = settled.find(
+      (result) => result.status === "rejected" && isMlAuthorizationFailure(result.reason),
+    );
+    if (mlAuthorizationFailure) throw mlAuthorizationFailure.reason;
 
     setCacheValue(ALL_PREDICTIONS_CACHE_KEY, unifiedPredictions);
 
@@ -921,16 +832,16 @@ export const getUnifiedPredictions = async (req, res) => {
     });
   } catch (error) {
     logEvent("error", "Failed to fetch unified predictions", {
-      error: error?.message || "Unknown error",
+      errorType: error?.code || error?.name || "unknown",
     });
 
-    return sendError(res, 500, "Failed to fetch unified predictions", error.message);
+    return sendBackendError(res, "Failed to fetch unified predictions", error);
   }
 };
 
 export const comparePredictions = async (req, res) => {
   try {
-    const products = await getAllProducts();
+    const products = await getAllProducts(req.authContext.tenantId);
 
     if (!products.length) {
       return res.status(200).json([]);
@@ -939,7 +850,7 @@ export const comparePredictions = async (req, res) => {
     const settled = await settleWithConcurrency(
       products,
       async (product) => {
-        const comparison = await callMlComparison(product.id);
+        const comparison = await requestMlComparison(product.id);
         return normalizeComparisonPayload(comparison, product);
       },
       ML_COMPARE_CONCURRENCY,
@@ -951,7 +862,12 @@ export const comparePredictions = async (req, res) => {
 
     const failed = settled
       .filter((result) => result.status === "rejected")
-      .map((result) => result.reason?.message || "Unknown error");
+      .map(() => "Model comparison unavailable");
+
+    const mlAuthorizationFailure = settled.find(
+      (result) => result.status === "rejected" && isMlAuthorizationFailure(result.reason),
+    );
+    if (mlAuthorizationFailure) throw mlAuthorizationFailure.reason;
 
     if (failed.length) {
       logEvent("warn", "Some model comparisons failed", {
@@ -971,13 +887,10 @@ export const comparePredictions = async (req, res) => {
     return res.status(200).json(comparisons);
   } catch (error) {
     logEvent("error", "Failed to compare predictions", {
-      error: error?.message || "Unknown error",
+      errorType: error?.code || error?.name || "unknown",
     });
 
-    return res.status(500).json({
-      message: "Failed to compare predictions",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to compare predictions", error);
   }
 };
 

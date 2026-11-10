@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { askAiAnalyst } from "./aiAnalystController.js";
 
-const invoke = async (body) => {
+const invoke = async (body, context = {}) => {
   const response = { statusCode: 200, body: null };
   const res = {
     status(code) {
@@ -15,7 +15,7 @@ const invoke = async (body) => {
       return res;
     },
   };
-  await askAiAnalyst({ body }, res);
+  await askAiAnalyst({ body, ...context }, res);
   return response;
 };
 
@@ -40,11 +40,18 @@ test("proxies grounded AI Analyst responses with only the internal credential", 
   };
 
   try {
-    const response = await invoke({ question: "Explain inventory recommendations" });
+    const response = await invoke({ question: "Explain inventory recommendations" }, {
+      authContext: { userId: "user-123", tenantId: "tenant-456" },
+      correlationId: "corr-ai-123",
+      headers: { "x-user-id": "attacker", "x-tenant-id": "tenant-attacker" },
+    });
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.provenance.documentation, true);
     assert.equal(request.url, "http://local-ml.test/ai-analyst");
     assert.equal(request.options.headers["X-ML-Internal-Token"], "internal-test-token");
+    assert.equal(request.options.headers["X-User-ID"], "user-123");
+    assert.equal(request.options.headers["X-Tenant-ID"], "tenant-456");
+    assert.equal(request.options.headers["X-Correlation-ID"], "corr-ai-123");
     assert.equal(request.options.headers.Authorization, undefined);
     assert.deepEqual(JSON.parse(request.options.body), {
       question: "Explain inventory recommendations",
@@ -62,7 +69,9 @@ test("fails safely when the internal credential is missing", async () => {
   const originalToken = process.env.ML_ANALYST_INTERNAL_TOKEN;
   delete process.env.ML_ANALYST_INTERNAL_TOKEN;
   try {
-    const response = await invoke({ question: "How many products exist?" });
+    const response = await invoke({ question: "How many products exist?" }, {
+      authContext: { userId: "user-123", tenantId: "tenant-456" },
+    });
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.body, { message: "AI Analyst authorization is not configured" });
   } finally {
@@ -82,7 +91,9 @@ test("sanitizes upstream provider errors without rewriting the response", async 
     });
 
   try {
-    const response = await invoke({ question: "How many products exist?" });
+    const response = await invoke({ question: "How many products exist?" }, {
+      authContext: { userId: "user-123", tenantId: "tenant-456" },
+    });
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.body, { error: "AI Analyst provider is unavailable" });
   } finally {
@@ -103,11 +114,56 @@ test("returns a sanitized error when ML service times out", async () => {
   };
 
   try {
-    const response = await invoke({ question: "How many products exist?" });
+    const response = await invoke({ question: "How many products exist?" }, {
+      authContext: { userId: "user-123", tenantId: "tenant-456" },
+    });
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.body, { message: "AI Analyst timed out" });
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
+    else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
+  }
+});
+
+test("handles an invalid internal service token without exposing credentials", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.ML_ANALYST_INTERNAL_TOKEN;
+  process.env.ML_ANALYST_INTERNAL_TOKEN = "internal-test-token";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: "Invalid internal authorization",
+    internalToken: "internal-test-token",
+    diagnostic: "received internal-test-token",
+  }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  try {
+    const response = await invoke({ question: "How many products exist?" }, {
+      authContext: { userId: "user-123", tenantId: "tenant-456" },
+    });
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.body, {
+      error: "Invalid internal authorization",
+      internalToken: "[REDACTED]",
+      diagnostic: "received [REDACTED]",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
+    else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
+  }
+});
+
+test("fails closed when trusted identity context is absent", async () => {
+  const originalToken = process.env.ML_ANALYST_INTERNAL_TOKEN;
+  process.env.ML_ANALYST_INTERNAL_TOKEN = "internal-test-token";
+  try {
+    const response = await invoke({ question: "How many products exist?" });
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.body, { message: "Trusted identity context is required" });
+  } finally {
     if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
     else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
   }

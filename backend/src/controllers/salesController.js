@@ -1,4 +1,5 @@
 import { insertSale, isProductReference, resolveProduct, getSalesByProductId } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const toSalesResponse = ({ sale, product }) => ({
   _id: sale.id,
@@ -37,17 +38,14 @@ export const addSales = async (req, res) => {
       return res.status(400).json({ message: "Invalid date" });
     }
 
-    const result = await insertSale(productId, new Date(date), Number(quantity));
+    const result = await insertSale(req.authContext.tenantId, productId, new Date(date), Number(quantity));
     if (!result) {
       return res.status(404).json({ message: "Product not found" });
     }
 
     return res.status(201).json(toSalesResponse(result));
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to add sales",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to add sales", error);
   }
 };
 
@@ -59,12 +57,12 @@ export const getSalesByProduct = async (req, res) => {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const product = await resolveProduct(productId);
+    const product = await resolveProduct(req.authContext.tenantId, productId);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const sales = await getSalesByProductId(product.id);
+    const sales = await getSalesByProductId(req.authContext.tenantId, product.id);
     const response = sales.map((sale) => ({
       _id: sale.id,
       id: sale.id,
@@ -82,9 +80,6 @@ export const getSalesByProduct = async (req, res) => {
 
     return res.status(200).json(response);
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch sales by product",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to fetch sales by product", error);
   }
 };

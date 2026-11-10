@@ -1,4 +1,11 @@
 import { isProductReference, resolveProduct } from "../config/postgres.js";
+import {
+  createMlServiceError,
+  getMlAnalystConfig,
+  requestMlService,
+} from "../services/mlAnalystClient.js";
+import { getRequestContext } from "../services/requestContext.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const ML_NEWS_INSIGHTS_URL =
   process.env.ML_NEWS_INSIGHTS_URL || "http://localhost:5002/news-insights";
@@ -55,26 +62,22 @@ const setCacheValue = (key, value) => {
 };
 
 const callMlNewsInsights = async (productName) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ML_TIMEOUT_MS);
+  const context = getRequestContext();
+  const config = getMlAnalystConfig();
+  const response = await requestMlService({
+    url: ML_NEWS_INSIGHTS_URL,
+    timeoutMs: ML_TIMEOUT_MS,
+    internalToken: config.internalToken,
+    body: { productName },
+    userId: context.userId,
+    tenantId: context.tenantId,
+    correlationId: context.correlationId,
+  });
+  if (!response.ok) {
+    throw createMlServiceError(response.status);
+  }
 
-  try {
-    if (typeof fetch !== "function") {
-      throw new Error("Global fetch is not available in this Node runtime");
-    }
-
-    const response = await fetch(ML_NEWS_INSIGHTS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productName }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`ML service responded with status ${response.status}`);
-    }
-
-    const payload = await response.json();
+    const payload = response.payload;
     const headlines = Array.isArray(payload?.headlines)
       ? payload.headlines.filter((item) => typeof item === "string").slice(0, 5)
       : [];
@@ -99,25 +102,29 @@ const callMlNewsInsights = async (productName) => {
       matchedKeywords,
       sourceHeadlines,
     };
-  } finally {
-    clearTimeout(timeoutId);
-  }
 };
 
 export const getProductNewsInsights = async (req, res) => {
   try {
+    const { internalToken } = getMlAnalystConfig();
+    if (!internalToken) {
+      return res.status(503).json({ message: "ML service authorization is not configured" });
+    }
+
     const { productId } = req.params;
 
     if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const product = await resolveProduct(productId);
+    const tenantId = req.authContext.tenantId;
+    const product = await resolveProduct(tenantId, productId);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const cached = getCacheValue(productId);
+    const cacheKey = `${tenantId}:${productId}`;
+    const cached = getCacheValue(cacheKey);
     if (cached) {
       return res.status(200).json({
         ...cached,
@@ -137,7 +144,18 @@ export const getProductNewsInsights = async (req, res) => {
     try {
       newsInsights = await callMlNewsInsights(product.name);
     } catch (newsError) {
-      console.warn("[news] Failed to fetch ML news insights, using neutral fallback:", newsError?.message || newsError);
+      if (
+        newsError?.code === "MISSING_INTERNAL_TOKEN"
+        || (newsError?.code === "ML_SERVICE_REJECTED" && [401, 403].includes(newsError.status))
+      ) {
+        throw newsError;
+      }
+      console.warn("[news]", JSON.stringify({
+        level: "warn",
+        event: "ml_news_insights_failed",
+        correlationId: req.correlationId,
+        errorType: newsError?.status ? "upstream_rejected" : "unavailable",
+      }));
     }
 
     const responsePayload = {
@@ -155,13 +173,16 @@ export const getProductNewsInsights = async (req, res) => {
       cached: false,
     };
 
-    setCacheValue(productId, responsePayload);
+    setCacheValue(cacheKey, responsePayload);
 
     return res.status(200).json(responsePayload);
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch news insights",
-      error: error.message,
-    });
+    console.error("[news]", JSON.stringify({
+      level: "error",
+      event: "request_failed",
+      correlationId: req.correlationId,
+      errorType: error?.name || "unknown",
+    }));
+    return sendBackendError(res, "Failed to fetch news insights", error);
   }
 };

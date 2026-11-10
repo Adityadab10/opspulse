@@ -19,8 +19,8 @@ const getConfidenceLevel = ({ monthlySeries, trend, hasSameMonthLastYear }) => {
   return "Low";
 };
 
-export const generatePredictionForProduct = async (productId) => {
-  const salesRows = await getSalesSeriesByProductId(productId);
+export const generatePredictionForProduct = async (tenantId, productId) => {
+  const salesRows = await getSalesSeriesByProductId(tenantId, productId);
   const salesDocs = salesRows.map((row) => ({
     date: row.sale_date,
     quantity: Number(row.quantity || 0),

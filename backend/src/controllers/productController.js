@@ -1,4 +1,5 @@
 import { createProduct as createPostgresProduct, getAllProducts as getPostgresProducts } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const toProductResponse = (product) => ({
   _id: product.id,
@@ -18,25 +19,19 @@ export const createProduct = async (req, res) => {
       return res.status(400).json({ message: "name and category are required" });
     }
 
-    const product = await createPostgresProduct(name, category);
+    const product = await createPostgresProduct(req.authContext.tenantId, name, category);
 
     return res.status(201).json(toProductResponse(product));
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to create product",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to create product", error);
   }
 };
 
 export const getAllProducts = async (req, res) => {
   try {
-    const products = await getPostgresProducts("created_at");
+    const products = await getPostgresProducts(req.authContext.tenantId, "created_at");
     return res.status(200).json(products.map(toProductResponse));
   } catch (error) {
-    return res.status(500).json({
-      message: "Failed to fetch products",
-      error: error.message,
-    });
+    return sendBackendError(res, "Failed to fetch products", error);
   }
 };

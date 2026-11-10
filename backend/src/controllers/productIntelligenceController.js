@@ -6,24 +6,26 @@ import {
   isProductReference,
   resolveProduct,
 } from "../config/postgres.js";
+import { sendBackendError } from "../helpers/errorResponse.js";
 
 const RECENT_DAYS = 30;
 
 const getProductIntelligence = async (req, res) => {
   try {
     const { productId } = req.params;
+    const tenantId = req.authContext.tenantId;
 
     if (!isProductReference(productId)) {
       return res.status(400).json({ message: "Invalid productId" });
     }
 
-    const product = await resolveProduct(productId);
+    const product = await resolveProduct(tenantId, productId);
 
     if (!product || product.legacy_mongo_id === 'test123') {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const salesDocs = await getSalesByProductId(product.id);
+    const salesDocs = await getSalesByProductId(tenantId, product.id);
 
     // Calculate historical demand data
     let historicalSales = [];
@@ -102,7 +104,7 @@ const getProductIntelligence = async (req, res) => {
     }
 
     // Get the latest prediction from PostgreSQL
-    const predictionDoc = await getPredictionByProductId(product.id);
+    const predictionDoc = await getPredictionByProductId(tenantId, product.id);
 
     let forecast = {
       predictedDemand: 0,
@@ -137,7 +139,7 @@ const getProductIntelligence = async (req, res) => {
     }
 
     // Get active alerts for this product from PostgreSQL
-    const activeAlerts = await getActiveAlertsByProductId(product.id);
+    const activeAlerts = await getActiveAlertsByProductId(tenantId, product.id);
 
     // Build response
     const intelligence = {
@@ -165,11 +167,8 @@ const getProductIntelligence = async (req, res) => {
 
     return res.status(200).json(intelligence);
   } catch (error) {
-    console.error("Product intelligence fetch error:", error.message);
-    return res.status(500).json({
-      message: "Failed to fetch product intelligence",
-      error: error.message,
-    });
+    console.error("Product intelligence fetch error:", error?.code || error?.name || "unknown");
+    return sendBackendError(res, "Failed to fetch product intelligence", error);
   }
 };
 

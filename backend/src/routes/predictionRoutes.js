@@ -4,11 +4,22 @@ import {
   predictByProduct,
   predictAllProducts,
 } from "../controllers/predictionController.js";
+import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireTenantContext } from "../middleware/tenantContext.js";
+import { requireMlServiceToken } from "../middleware/mlServiceAuth.js";
 
-const router = express.Router();
+export const createPredictionRouter = ({
+  authMiddleware = requireFirebaseAuth,
+  tenantMiddleware = requireTenantContext,
+  mlServiceMiddleware = requireMlServiceToken,
+} = {}) => {
+  const router = express.Router();
 
-router.get("/", getUnifiedPredictions);
-router.post("/predict/:productId", predictByProduct);
-router.post("/predict-all", predictAllProducts);
+  router.use(authMiddleware, tenantMiddleware, mlServiceMiddleware);
+  router.get("/", getUnifiedPredictions);
+  router.post("/predict/:productId", predictByProduct);
+  router.post("/predict-all", predictAllProducts);
+  return router;
+};
 
-export default router;
+export default createPredictionRouter();
