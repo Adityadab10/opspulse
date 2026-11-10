@@ -2,6 +2,7 @@ import { useState } from "react";
 import toast from "react-hot-toast";
 import Sidebar from "../components/Sidebar";
 import { uploadApi } from "../services/api";
+import { getSafeApiErrorLog, getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
 
 export default function Upload() {
   const [file, setFile] = useState(null);
@@ -18,8 +19,10 @@ export default function Upload() {
       setFile(null);
       e.target.reset();
     } catch (error) {
-      console.error("Upload error:", error);
-      toast.error(error?.response?.data?.message || "Upload failed");
+      console.error("Upload error:", getSafeApiErrorLog(error));
+      if (!isStaleTenantContextError(error)) {
+        toast.error(getSafeApiErrorMessage(error, "Upload failed"));
+      }
     } finally {
       setSubmitting(false);
     }

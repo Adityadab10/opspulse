@@ -1,9 +1,62 @@
 import axios from "axios";
+import { auth } from "../../firebase.config";
+import {
+  buildAuthenticatedRequestConfig,
+  classifyApiError,
+  isTenantContextStale,
+} from "./authSupport";
+import { getSelectedTenantId, getTenantContextVersion } from "./tenantState";
 
 const api = axios.create({
   baseURL: "http://localhost:5001/api",
   timeout: 15000,
 });
+
+let apiErrorHandler = null;
+
+export const setApiErrorHandler = (handler) => {
+  apiErrorHandler = typeof handler === "function" ? handler : null;
+};
+
+export const createAuthRequestInterceptor = ({
+  getCurrentUser = () => auth?.currentUser,
+  getTenantId = getSelectedTenantId,
+  getTenantVersion = getTenantContextVersion,
+} = {}) => async (config) => {
+  return buildAuthenticatedRequestConfig({
+    config,
+    getCurrentUser,
+    getTenantId,
+    getTenantContextVersion: getTenantVersion,
+  });
+};
+
+api.interceptors.request.use(createAuthRequestInterceptor());
+api.interceptors.response.use(
+  (response) => {
+    const requestVersion = response.config?.metadata?.tenantContextVersion;
+    if (isTenantContextStale(requestVersion, getTenantContextVersion())) {
+      const error = new Error("Tenant context changed while the request was in flight");
+      error.code = "STALE_TENANT_CONTEXT";
+      error.config = response.config;
+      return Promise.reject(error);
+    }
+    return response;
+  },
+  (error) => {
+    const requestVersion = error.config?.metadata?.tenantContextVersion;
+    if (isTenantContextStale(requestVersion, getTenantContextVersion())) {
+      error.code = "STALE_TENANT_CONTEXT";
+      return Promise.reject(error);
+    }
+
+    const classified = classifyApiError(error);
+    if (classified && apiErrorHandler) {
+      apiErrorHandler(classified);
+    }
+    return Promise.reject(error);
+  },
+);
 
 export const dashboardApi = {
   getSummary: () => api.get("/dashboard/summary"),
@@ -49,9 +102,8 @@ export const uploadApi = {
 };
 
 export const aiAnalystApi = {
-  ask: (question, authorization) =>
+  ask: (question) =>
     api.post("/ai-analyst", { question }, {
-      headers: authorization ? { Authorization: authorization } : undefined,
       timeout: 30000,
     }),
 };

@@ -20,6 +20,7 @@ import ComparisonModal from "../components/ComparisonModal";
 import ForecastComparisonChart from "../components/ForecastComparisonChart";
 import AiAnalystPanel from "../components/AiAnalystPanel";
 import { alertsApi, comparisonApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
+import { getSafeApiErrorLog, getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
 
 const mergeAnalysisWithProducts = (analysisRows, products) => {
   const bucket = new Map();
@@ -314,13 +315,10 @@ export default function Dashboard() {
       });
       setAlerts(Array.isArray(alertsRes?.data) ? alertsRes.data : []);
     } catch (err) {
-      console.error("Dashboard fetch error:", err);
-      const message =
-        err?.response?.data?.error?.message ||
-        err?.response?.data?.message ||
-        err?.message ||
-        "Failed to load dashboard summary data.";
-      setDashboardError(message);
+      if (!isStaleTenantContextError(err)) {
+        console.error("Dashboard fetch error:", getSafeApiErrorLog(err));
+        setDashboardError(getSafeApiErrorMessage(err, "Failed to load dashboard summary data."));
+      }
     } finally {
       setSummaryLoading(false);
     }
@@ -339,17 +337,11 @@ export default function Dashboard() {
       setPredictions(rows);
       setLastPredictionsSyncAt(new Date());
     } catch (err) {
-      console.error("Predictions fetch error:", err);
-
-      const message =
-        err?.response?.data?.error?.message ||
-        err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        err?.message ||
-        "Failed to load predictions.";
-
-      setPredictionsError(message);
-      setPredictions([]);
+      if (!isStaleTenantContextError(err)) {
+        console.error("Predictions fetch error:", getSafeApiErrorLog(err));
+        setPredictionsError(getSafeApiErrorMessage(err, "Failed to load predictions."));
+        setPredictions([]);
+      }
     } finally {
       setPredictionsLoading(false);
     }
@@ -364,15 +356,11 @@ export default function Dashboard() {
       const rows = Array.isArray(response?.data) ? response.data : [];
       setComparisonData(rows.map(normalizeComparisonRow));
     } catch (err) {
-      console.error("Comparison fetch error:", err);
-
-      const message =
-        err?.response?.data?.error?.message ||
-        err?.response?.data?.message ||
-        err?.message ||
-        "Failed to load forecast comparisons.";
-      setComparisonError(message);
-      setComparisonData([]);
+      if (!isStaleTenantContextError(err)) {
+        console.error("Comparison fetch error:", getSafeApiErrorLog(err));
+        setComparisonError(getSafeApiErrorMessage(err, "Failed to load forecast comparisons."));
+        setComparisonData([]);
+      }
     } finally {
       setComparisonLoading(false);
     }
@@ -434,15 +422,12 @@ export default function Dashboard() {
       toast.success("Prediction generated successfully");
       setLastPredictionsSyncAt(new Date());
     } catch (error) {
-      console.error("Run prediction error:", error);
-      const message =
-        error?.response?.data?.error?.message ||
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        "Failed to generate prediction.";
-
-      setPredictionErrorById((prev) => ({ ...prev, [productId]: message }));
-      toast.error(message);
+      if (!isStaleTenantContextError(error)) {
+        console.error("Run prediction error:", getSafeApiErrorLog(error));
+        const message = getSafeApiErrorMessage(error, "Failed to generate prediction.");
+        setPredictionErrorById((prev) => ({ ...prev, [productId]: message }));
+        toast.error(message);
+      }
     } finally {
       setPredictionLoadingById((prev) => ({ ...prev, [productId]: false }));
     }
@@ -477,14 +462,12 @@ export default function Dashboard() {
       const savedCount = toNumber(payload?.saved, normalizedRows.length);
       toast.success(`AI predictions generated for ${savedCount} products.`);
     } catch (error) {
-      console.error("Run all predictions error:", error);
-      const message =
-        error?.response?.data?.error?.message ||
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        "Failed to run all predictions.";
-      setRunAllError(message);
-      toast.error(message);
+      if (!isStaleTenantContextError(error)) {
+        console.error("Run all predictions error:", getSafeApiErrorLog(error));
+        const message = getSafeApiErrorMessage(error, "Failed to run all predictions.");
+        setRunAllError(message);
+        toast.error(message);
+      }
     } finally {
       setRunAllLoading(false);
     }
@@ -540,12 +523,9 @@ export default function Dashboard() {
         ),
       });
     } catch (error) {
-      const message =
-        error?.response?.data?.error?.message ||
-        error?.response?.data?.message ||
-        error?.response?.data?.error ||
-        "Failed to fetch news";
-      setNewsPanelError(message);
+      if (!isStaleTenantContextError(error)) {
+        setNewsPanelError(getSafeApiErrorMessage(error, "Failed to fetch news"));
+      }
     } finally {
       setNewsPanelLoading(false);
       setNewsLoadingById((prev) => ({ ...prev, [productId]: false }));

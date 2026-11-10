@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { MessageCircle, Send } from "lucide-react";
-import { auth } from "../../firebase.config";
 import { aiAnalystApi } from "../services/api";
+import { getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
 
 export default function AiAnalystPanel() {
   const [question, setQuestion] = useState("");
@@ -19,22 +19,15 @@ export default function AiAnalystPanel() {
     setLoading(true);
     setError("");
     try {
-      const token = await auth.currentUser?.getIdToken?.();
-      const response = await aiAnalystApi.ask(
-        trimmed,
-        token ? `Bearer ${token}` : "",
-      );
+      const response = await aiAnalystApi.ask(trimmed);
       if (currentRequestId !== requestId.current) return;
       setAnswer(response.data);
       setQuestion("");
     } catch (requestError) {
       if (currentRequestId !== requestId.current) return;
+      if (isStaleTenantContextError(requestError)) return;
       setAnswer(null);
-      setError(
-        requestError.response?.data?.error ||
-          requestError.response?.data?.message ||
-          "AI Analyst is unavailable. Try again later.",
-      );
+      setError(getSafeApiErrorMessage(requestError, "AI Analyst is unavailable. Try again later."));
     } finally {
       if (currentRequestId === requestId.current) {
         setLoading(false);

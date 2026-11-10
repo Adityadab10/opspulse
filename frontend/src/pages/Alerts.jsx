@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import { alertsApi } from "../services/api";
+import { getSafeApiErrorLog, isStaleTenantContextError } from "../services/authSupport";
 
 const severityClass = {
   LOW: "bg-sky-500/20 text-sky-400 border border-sky-500/30",
@@ -25,7 +26,9 @@ export default function Alerts() {
         const res = await alertsApi.getAlerts();
         setAlerts(res.data || []);
       } catch (err) {
-        console.error("Alerts fetch error:", err);
+        if (!isStaleTenantContextError(err)) {
+          console.error("Alerts fetch error:", getSafeApiErrorLog(err));
+        }
       } finally {
         setLoading(false);
       }
