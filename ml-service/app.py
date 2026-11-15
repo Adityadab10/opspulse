@@ -33,7 +33,7 @@ from security import (
     require_trusted_context,
 )
 from tools import ToolNotFoundError, ToolPermissionError, default_registry
-from workflow import build_minimal_graph, run_minimal_pipeline, default_checkpointer_manager
+from workflow import build_minimal_graph, run_minimal_pipeline, default_checkpointer_manager, run_inventory_agent
 
 try:
     from predictionService import predict_demand
@@ -128,6 +128,11 @@ class AgentRunRequest(BaseModel):
     question: str
     thread_id: Optional[str] = None
     run_id: Optional[str] = None
+
+class InventoryAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    horizon_days: int = Field(default=30, ge=1, le=90)
+    inventory_health: dict[str, Any]
 
 
 @asynccontextmanager
@@ -655,6 +660,15 @@ async def run_agent_pipeline_endpoint(
         return _json_response(final_state)
     except Exception as exc:
         return _json_response({"error": f"Pipeline execution failed: {str(exc)}"}, 500)
+
+
+@app.post("/inventory-agent")
+async def inventory_agent(payload: InventoryAgentRequest, context: TrustedContext = Depends(require_trusted_context)):
+    """Run a tenant-scoped, read-only investigation. The LLM never writes data."""
+    try:
+        return _json_response(await run_in_threadpool(run_inventory_agent, context.tenant_id, context.user_id, payload.horizon_days, payload.inventory_health))
+    except Exception:
+        return _json_response({"error": "Inventory Agent failed"}, 500)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import ProductManagement from "./pages/ProductManagement";
 import SalesManagement from "./pages/SalesManagement";
 import Forecasting from "./pages/Forecasting";
 import InventoryIntelligence from "./pages/InventoryIntelligence";
+import InventoryAgent from "./pages/InventoryAgent";
 import AiAnalyst from "./pages/AiAnalyst";
 
 function StatusBanner() {
@@ -141,6 +142,7 @@ export default function App() {
           path="/inventory"
           element={<ProtectedRoute><InventoryIntelligence /></ProtectedRoute>}
         />
+        <Route path="/inventory-agent" element={<ProtectedRoute><InventoryAgent /></ProtectedRoute>} />
         <Route path="/ai-analyst" element={<ProtectedRoute><AiAnalyst /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

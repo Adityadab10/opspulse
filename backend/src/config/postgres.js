@@ -527,7 +527,7 @@ const insertSale = async (tenantId, productReference, saleDate, quantity) => {
   }
 };
 
-const adjustProductStock = async (tenantId, productReference, { mode = 'adjust', quantity, reason }) => {
+const adjustProductStock = async (tenantId, productReference, { mode = 'adjust', quantity, reason, expectedStock = undefined }) => {
   const tenant = await withTenant(tenantId);
   const client = await pool.connect();
   try {
@@ -550,6 +550,10 @@ const adjustProductStock = async (tenantId, productReference, { mode = 'adjust',
       throw error;
     }
     const current = Number(product.stock_quantity);
+    if (expectedStock !== undefined && current !== Number(expectedStock)) {
+      await client.query('ROLLBACK');
+      return { staleStock: true, availableStock: current, product };
+    }
     const requested = Number(quantity);
     const movementCount = await client.query(
       'SELECT COUNT(*)::int AS count FROM inventory_movements WHERE tenant_id = $1 AND product_id = $2',

@@ -9,6 +9,7 @@ from workflow.minimal_graph import (
     run_minimal_pipeline,
     synthesize_evidence_node,
 )
+from workflow.inventory_agent import run_inventory_agent
 
 __all__ = [
     "CheckpointerManager",
@@ -18,4 +19,5 @@ __all__ = [
     "initialize_node",
     "execute_tool_node",
     "synthesize_evidence_node",
+    "run_inventory_agent",
 ]

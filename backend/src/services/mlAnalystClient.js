@@ -29,6 +29,7 @@ export const getMlAnalystConfig = () => ({
   url: process.env.ML_ANALYST_URL || "http://localhost:5002/ai-analyst",
   timeoutMs: Number(process.env.ML_ANALYST_TIMEOUT_MS || 25000),
   internalToken: process.env.ML_ANALYST_INTERNAL_TOKEN?.trim(),
+  inventoryAgentUrl: process.env.ML_INVENTORY_AGENT_URL || "http://localhost:5002/inventory-agent",
 });
 
 const getTrustedRequestContext = ({ userId, tenantId, correlationId } = {}) => {

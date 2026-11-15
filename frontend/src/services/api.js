@@ -110,6 +110,13 @@ export const inventoryApi = {
   getIntelligence: (params = {}) => api.get("/inventory/intelligence", { params }),
 };
 
+export const inventoryAgentApi = {
+  start: (horizonDays = 30) => api.post("/inventory-agent/runs", { horizonDays }, { timeout: 30000 }),
+  listRuns: () => api.get("/inventory-agent/runs"),
+  decide: (actionId, decision) => api.post(`/inventory-agent/actions/${encodeURIComponent(actionId)}/decision`, { decision }),
+  execute: (actionId) => api.post(`/inventory-agent/actions/${encodeURIComponent(actionId)}/execute`),
+};
+
 export const uploadApi = {
   uploadCsv: (file) => {
     const formData = new FormData();

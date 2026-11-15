@@ -13,6 +13,7 @@ import predictionRoutes from "./routes/predictionRoutes.js";
 import newsRoutes from "./routes/newsRoutes.js";
 import aiAnalystRoutes from "./routes/aiAnalystRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
+import inventoryAgentRoutes from "./routes/inventoryAgentRoutes.js";
 import { correlationIdMiddleware } from "./middleware/correlationId.js";
 import { requireFirebaseAuth } from "./middleware/firebaseAuth.js";
 import { requireTenantContext } from "./middleware/tenantContext.js";
@@ -43,6 +44,7 @@ app.use("/api/predictions", predictionRoutes);
 app.use("/api/news", newsRoutes);
 app.use("/api/ai-analyst", aiAnalystRoutes);
 app.use("/api/inventory", inventoryRoutes);
+app.use("/api/inventory-agent", inventoryAgentRoutes);
 app.post("/api/predict-all", requireFirebaseAuth, requireTenantContext, requireMlServiceToken, predictAllProducts);
 app.get("/api/compare-predictions", requireFirebaseAuth, requireTenantContext, requireMlServiceToken, comparePredictions);
 
