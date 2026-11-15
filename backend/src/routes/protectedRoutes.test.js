@@ -10,6 +10,7 @@ import predictionRoutes from "./predictionRoutes.js";
 import newsRoutes from "./newsRoutes.js";
 import aiAnalystRoutes from "./aiAnalystRoutes.js";
 import forecastRoutes from "./forecastRoutes.js";
+import inventoryRoutes from "./inventoryRoutes.js";
 
 const protectedRoutes = [
   ["products", productRoutes],
@@ -21,6 +22,7 @@ const protectedRoutes = [
   ["news", newsRoutes],
   ["AI Analyst", aiAnalystRoutes],
   ["forecast", forecastRoutes],
+  ["inventory", inventoryRoutes],
 ];
 
 const invoke = async (router) => {

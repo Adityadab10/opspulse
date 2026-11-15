@@ -5,7 +5,7 @@ import { useAuth } from "../auth/authContextValue";
 import { getSafeApiErrorLog, getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
 import { productsApi } from "../services/api";
 
-const emptyForm = { name: "", category: "" };
+const emptyForm = { name: "", category: "", reorderThreshold: "10" };
 
 const readFieldErrors = (error) => error?.response?.data?.errors || {};
 
@@ -26,6 +26,8 @@ function ProductForm({ initialValue = emptyForm, submitLabel, onSubmit, onCancel
     if (!form.category.trim()) nextErrors.category = "Category is required";
     if (form.name.trim().length > 255) nextErrors.name = "Name must be 255 characters or fewer";
     if (form.category.trim().length > 100) nextErrors.category = "Category must be 100 characters or fewer";
+    const threshold = Number(form.reorderThreshold);
+    if (!Number.isInteger(threshold) || threshold < 0) nextErrors.reorderThreshold = "Reorder threshold must be a non-negative whole number";
     if (Object.keys(nextErrors).length) {
       setErrors(nextErrors);
       return;
@@ -34,7 +36,7 @@ function ProductForm({ initialValue = emptyForm, submitLabel, onSubmit, onCancel
     try {
       setSubmitting(true);
       setErrors({});
-      await onSubmit({ name: form.name.trim(), category: form.category.trim() });
+      await onSubmit({ name: form.name.trim(), category: form.category.trim(), reorderThreshold: threshold });
     } catch (error) {
       if (!isStaleTenantContextError(error)) {
         const fieldErrors = readFieldErrors(error);
@@ -59,6 +61,12 @@ function ProductForm({ initialValue = emptyForm, submitLabel, onSubmit, onCancel
           className="w-full rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-purple-400/60"
         />
         {errors.name ? <p className="mt-1 text-xs text-red-300">{errors.name}</p> : null}
+      </div>
+      <div>
+        <label htmlFor="product-reorder-threshold" className="mb-1 block text-sm font-semibold text-slate-200">Reorder threshold</label>
+        <input id="product-reorder-threshold" type="number" min="0" step="1" value={form.reorderThreshold ?? ""} onChange={(event) => setForm((current) => ({ ...current, reorderThreshold: event.target.value }))} className="w-full rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-purple-400/60" />
+        <p className="mt-1 text-xs text-slate-400">At or below this unit threshold, the product is flagged low-stock.</p>
+        {errors.reorderThreshold ? <p className="mt-1 text-xs text-red-300">{errors.reorderThreshold}</p> : null}
       </div>
       <div>
         <label htmlFor="product-category" className="mb-1 block text-sm font-semibold text-slate-200">Category</label>
@@ -227,8 +235,8 @@ export default function ProductManagement() {
                 <div className="flex gap-2"><button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-purple-400/30 px-4 py-2 text-sm font-semibold text-purple-100">Edit</button><button type="button" onClick={remove} className="rounded-lg border border-red-400/30 px-4 py-2 text-sm font-semibold text-red-200">Delete</button></div>
               </div>
               {notice ? <p className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3 text-sm text-emerald-200">{notice}</p> : null}
-              {editing ? <ProductForm initialValue={{ name: product.name, category: product.category }} submitLabel="Save changes" onSubmit={update} onCancel={() => setEditing(false)} /> : (
-                <div className="grid gap-4 sm:grid-cols-2"><Detail label="Category" value={product.category} /><Detail label="Current stock" value={product.stockQuantity === null ? "Unavailable until migration 006" : product.stockQuantity} /><Detail label="Created" value={formatDate(product.createdAt)} /><Detail label="Last updated" value={formatDate(product.updatedAt)} /><Detail label="Product ID" value={product.id} /></div>
+              {editing ? <ProductForm initialValue={{ name: product.name, category: product.category, reorderThreshold: String(product.reorderThreshold ?? 10) }} submitLabel="Save changes" onSubmit={update} onCancel={() => setEditing(false)} /> : (
+                <div className="grid gap-4 sm:grid-cols-2"><Detail label="Category" value={product.category} /><Detail label="Current stock" value={product.stockQuantity === null ? "Unavailable until migration 006" : product.stockQuantity} /><Detail label="Reorder threshold" value={product.reorderThreshold === null ? "Unavailable until migration 007" : product.reorderThreshold} /><Detail label="Created" value={formatDate(product.createdAt)} /><Detail label="Last updated" value={formatDate(product.updatedAt)} /><Detail label="Product ID" value={product.id} /></div>
               )}
               {product.stockQuantity !== null ? <StockForm product={product} onUpdated={loadProduct} /> : null}
             </>

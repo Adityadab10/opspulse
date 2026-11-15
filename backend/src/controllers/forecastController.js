@@ -81,6 +81,7 @@ export const forecastProduct = async (req, res) => {
       reason: `${forecast.selectedModel} forecast over ${horizon} days using recorded sales quantities`,
       contributingFactors: [{ key: "historicalPoints", value: historical.length, source: "postgres" }],
       predictionSource: "ml",
+      predictionHorizonDays: horizon,
     });
 
     return res.status(200).json({

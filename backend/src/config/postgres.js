@@ -72,7 +72,7 @@ const getAllProducts = async (tenantId, sort = 'name', search = '') => {
   const searchClause = normalizedSearch ? 'AND (name ILIKE $2 OR category ILIKE $2)' : '';
   const params = normalizedSearch ? [tenant, `%${normalizedSearch}%`] : [tenant];
   const result = await pool.query(`
-    SELECT id, name, category, stock_quantity, created_at, updated_at, legacy_mongo_id
+    SELECT id, name, category, stock_quantity, reorder_threshold, created_at, updated_at, legacy_mongo_id
     FROM products
     WHERE tenant_id = $1 AND COALESCE(legacy_mongo_id, '') <> 'test123' ${searchClause}
     ORDER BY ${orderBy}`, params);
@@ -82,7 +82,7 @@ const getAllProducts = async (tenantId, sort = 'name', search = '') => {
 const getProductById = async (tenantId, productId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    'SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
+    'SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
     [tenant, productId],
   );
   return result.rows[0] || null;
@@ -91,7 +91,7 @@ const getProductById = async (tenantId, productId) => {
 const getProductByLegacyId = async (tenantId, legacyMongoId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    'SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
+    'SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
     [tenant, legacyMongoId],
   );
   return result.rows[0] || null;
@@ -212,6 +212,19 @@ const getSalesHistory = async (tenantId, { productId = null, startDate = null, e
   return result.rows;
 };
 
+const getInventoryHealthData = async (tenantId) => {
+  const tenant = await withTenant(tenantId);
+  const result = await pool.query(`
+    SELECT p.id, p.name, p.category, p.stock_quantity, p.reorder_threshold,
+           pr.predicted_demand, pr.prediction_horizon_days, pr.predicted_at,
+           pr.prediction_source
+    FROM products p
+    LEFT JOIN predictions pr ON pr.product_id = p.id AND pr.tenant_id = p.tenant_id
+    WHERE p.tenant_id = $1 AND COALESCE(p.legacy_mongo_id, '') <> 'test123'
+    ORDER BY p.name`, [tenant]);
+  return result.rows;
+};
+
 const countActiveAlerts = async (tenantId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query('SELECT COUNT(*) AS cnt FROM alerts WHERE tenant_id = $1 AND is_active = true', [tenant]);
@@ -226,7 +239,7 @@ const getPredictionByProductId = async (tenantId, productId) => {
     `SELECT pr.id, pr.product_id, pr.predicted_demand, pr.rule_prediction, pr.ml_prediction, pr.adjusted_prediction,
             avg_sales, percent_change, confidence, season_tag, decision, impact, keyword, score,
             source_headline, source_headlines, matched_keywords, reason, contributing_factors,
-            prediction_source, predicted_at
+            prediction_source, prediction_horizon_days, predicted_at
      FROM predictions pr
      JOIN products p ON p.id = pr.product_id AND p.tenant_id = pr.tenant_id
      WHERE pr.tenant_id = $1 AND pr.product_id = $2`,
@@ -260,9 +273,9 @@ const upsertPrediction = async (tenantId, productId, prediction) => {
        tenant_id, product_id, predicted_demand, avg_sales, percent_change, confidence,
        season_tag, rule_prediction, ml_prediction, adjusted_prediction, decision, impact,
        keyword, score, source_headline, source_headlines, matched_keywords, reason,
-       contributing_factors, prediction_source, predicted_at
+       contributing_factors, prediction_source, prediction_horizon_days, predicted_at
      )
-     SELECT $1::varchar, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now()
+     SELECT $1::varchar, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now()
      FROM products p
      WHERE p.tenant_id = $1::varchar AND p.id = $2::uuid
      ON CONFLICT (tenant_id, product_id) DO UPDATE SET
@@ -284,11 +297,12 @@ const upsertPrediction = async (tenantId, productId, prediction) => {
        reason = EXCLUDED.reason,
        contributing_factors = EXCLUDED.contributing_factors,
        prediction_source = EXCLUDED.prediction_source,
+       prediction_horizon_days = EXCLUDED.prediction_horizon_days,
        predicted_at = now()
      RETURNING id, product_id, predicted_demand, rule_prediction, ml_prediction, adjusted_prediction,
                avg_sales, percent_change, confidence, season_tag, decision, impact, keyword, score,
                source_headline, source_headlines, matched_keywords, reason, contributing_factors,
-               prediction_source, predicted_at`,
+               prediction_source, prediction_horizon_days, predicted_at`,
     [
       tenant,
       productId,
@@ -310,18 +324,19 @@ const upsertPrediction = async (tenantId, productId, prediction) => {
       prediction.reason,
       prediction.contributingFactors,
       prediction.predictionSource,
+      prediction.predictionHorizonDays || 30,
     ],
   );
   return rows[0] || null;
 };
 
-const createProduct = async (tenantId, name, category) => {
+const createProduct = async (tenantId, name, category, reorderThreshold = null) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    `INSERT INTO products (tenant_id, name, category, created_at, updated_at)
-     VALUES ($1, $2, $3, now(), now())
-     RETURNING id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at`,
-    [tenant, String(name).trim(), String(category).trim()],
+    `INSERT INTO products (tenant_id, name, category, reorder_threshold, created_at, updated_at)
+     VALUES ($1, $2, $3, COALESCE($4, 10), now(), now())
+     RETURNING id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at`,
+    [tenant, String(name).trim(), String(category).trim(), reorderThreshold],
   );
   return result.rows[0] || null;
 };
@@ -329,7 +344,7 @@ const createProduct = async (tenantId, name, category) => {
 const findProductByNameAndCategory = async (tenantId, name, category, excludeProductId = null) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    `SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at
+    `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
      FROM products
      WHERE tenant_id = $1
        AND lower(name) = lower($2)
@@ -341,16 +356,16 @@ const findProductByNameAndCategory = async (tenantId, name, category, excludePro
   return result.rows[0] || null;
 };
 
-const updateProduct = async (tenantId, productReference, name, category) => {
+const updateProduct = async (tenantId, productReference, name, category, reorderThreshold = null) => {
   const tenant = await withTenant(tenantId);
   const product = await resolveProduct(tenant, productReference);
   if (!product) return null;
   const result = await pool.query(
     `UPDATE products
-     SET name = $1, category = $2, updated_at = now()
-     WHERE tenant_id = $3 AND id = $4
-     RETURNING id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at`,
-    [String(name).trim(), String(category).trim(), tenant, product.id],
+     SET name = $1, category = $2, reorder_threshold = COALESCE($3, reorder_threshold), updated_at = now()
+     WHERE tenant_id = $4 AND id = $5
+     RETURNING id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at`,
+    [String(name).trim(), String(category).trim(), reorderThreshold, tenant, product.id],
   );
   return result.rows[0] || null;
 };
@@ -377,7 +392,7 @@ const deleteProduct = async (tenantId, productReference) => {
     await client.query('BEGIN');
     await ensureTenantSchema(client);
     const productResult = await client.query(
-      `SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at
+      `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
        FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant, productReference],
     );
@@ -418,7 +433,7 @@ const resolveProduct = async (tenantId, productReference, queryable = pool) => {
   if (!reference) return null;
 
   const legacyResult = await queryable.query(
-    'SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
+    'SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
     [tenant, reference],
   );
   if (legacyResult.rows.length > 1) {
@@ -428,7 +443,7 @@ const resolveProduct = async (tenantId, productReference, queryable = pool) => {
 
   if (!UUID_PATTERN.test(reference)) return null;
   const uuidResult = await queryable.query(
-    'SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
+    'SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
     [tenant, reference],
   );
   return uuidResult.rows[0] || null;
@@ -454,7 +469,7 @@ const insertSale = async (tenantId, productReference, saleDate, quantity) => {
       return null;
     }
     const locked = await client.query(
-      `SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at
+      `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
        FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant, resolved.id],
     );
@@ -523,7 +538,7 @@ const adjustProductStock = async (tenantId, productReference, { mode = 'adjust',
       return null;
     }
     const locked = await client.query(
-      `SELECT id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at
+      `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
        FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant, resolved.id],
     );
@@ -554,7 +569,7 @@ const adjustProductStock = async (tenantId, productReference, { mode = 'adjust',
     const updated = await client.query(
       `UPDATE products SET stock_quantity = $3, updated_at = now()
        WHERE tenant_id = $1 AND id = $2 AND stock_quantity = $4
-       RETURNING id, name, category, stock_quantity, legacy_mongo_id, created_at, updated_at`,
+       RETURNING id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at`,
       [tenant, product.id, next, current],
     );
     if (updated.rows.length === 0) {
@@ -794,7 +809,7 @@ const upsertAlertByProductAndType = async (
 const getProductsByLegacyIdPattern = async (tenantId, pattern) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    'SELECT id, name, category, stock_quantity, legacy_mongo_id FROM products WHERE tenant_id = $1 AND legacy_mongo_id LIKE $2 ORDER BY name',
+    'SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id FROM products WHERE tenant_id = $1 AND legacy_mongo_id LIKE $2 ORDER BY name',
     [tenant, pattern],
   );
   return result.rows;
@@ -816,6 +831,7 @@ export {
   getSalesSeriesByProductId,
   getAllSales,
   getSalesHistory,
+  getInventoryHealthData,
   countActiveAlerts,
   countAllActiveAlerts,
   getPredictionByProductId,

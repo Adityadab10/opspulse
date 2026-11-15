@@ -14,3 +14,11 @@ test("inventory migration defines zero-based stock and tenant-safe movement cons
   assert.match(sql, /quantity INTEGER NOT NULL CHECK \(quantity > 0\)/);
   assert.match(sql, /FOREIGN KEY \(tenant_id, product_id\)\s+REFERENCES products\(tenant_id, id\)/);
 });
+
+test("inventory intelligence migration defines explicit thresholds and forecast horizons", () => {
+  const sql = fs.readFileSync(path.resolve(path.dirname(migrationPath), "007_inventory_intelligence.sql"), "utf8");
+  assert.match(sql, /reorder_threshold INTEGER NOT NULL DEFAULT 10/);
+  assert.match(sql, /reorder_threshold_nonnegative/);
+  assert.match(sql, /prediction_horizon_days INTEGER NOT NULL DEFAULT 30/);
+  assert.match(sql, /horizon_positive/);
+});

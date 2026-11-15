@@ -106,6 +106,10 @@ export const productIntelligenceApi = {
   getProductIntelligence: (productId) => api.get(`/products/${productId}/intelligence`),
 };
 
+export const inventoryApi = {
+  getIntelligence: (params = {}) => api.get("/inventory/intelligence", { params }),
+};
+
 export const uploadApi = {
   uploadCsv: (file) => {
     const formData = new FormData();

@@ -17,6 +17,7 @@ const toProductResponse = (product) => ({
   name: product.name,
   category: product.category,
   stockQuantity: product.stock_quantity === undefined ? null : Number(product.stock_quantity),
+  reorderThreshold: product.reorder_threshold === undefined ? null : Number(product.reorder_threshold),
   legacy_mongo_id: product.legacy_mongo_id,
   createdAt: product.created_at,
   updatedAt: product.updated_at,
@@ -44,7 +45,7 @@ export const createProduct = async (req, res) => {
     const duplicate = await findProductByNameAndCategory(req.authContext.tenantId, input.name, input.category);
     if (duplicate) return res.status(409).json({ message: "A product with this name and category already exists" });
 
-    const product = await createPostgresProduct(req.authContext.tenantId, input.name, input.category);
+    const product = await createPostgresProduct(req.authContext.tenantId, input.name, input.category, input.reorderThreshold);
 
     return res.status(201).json(toProductResponse(product));
   } catch (error) {
@@ -95,7 +96,7 @@ export const updateProduct = async (req, res) => {
     );
     if (duplicate) return res.status(409).json({ message: "A product with this name and category already exists" });
 
-    const product = await updatePostgresProduct(req.authContext.tenantId, current.id, input.name, input.category);
+    const product = await updatePostgresProduct(req.authContext.tenantId, current.id, input.name, input.category, input.reorderThreshold);
     return res.status(200).json(toProductResponse(product));
   } catch (error) {
     return sendBackendError(res, "Failed to update product", error);

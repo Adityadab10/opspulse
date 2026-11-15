@@ -12,6 +12,7 @@ import {
   importCsvSales,
   getAllProducts,
   getSalesHistory,
+  getInventoryHealthData,
   insertSale,
   adjustProductStock,
   updateProduct,
@@ -65,6 +66,26 @@ test("scopes product and sales reads by the trusted tenant", async () => {
       !sql.includes("information_schema.columns") && !sql.includes("pg_constraint"));
     assert.equal(dataCalls.length, 4);
     assert.ok(dataCalls.every(({ sql, params }) => sql.includes("tenant_id") && params[0] === "tenant-a"));
+  } finally {
+    pool.query = originalQuery;
+  }
+});
+
+test("inventory intelligence reads join products and predictions under the trusted tenant", async () => {
+  const originalQuery = pool.query;
+  const calls = [];
+  pool.query = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes("information_schema.columns")) return { rows: tenantTables };
+    if (sql.includes("pg_constraint")) return { rows: [{ conname: "sales_tenant_product_date_key" }, { conname: "predictions_tenant_product_key" }] };
+    return { rows: [] };
+  };
+  try {
+    await getInventoryHealthData("tenant-a");
+    const query = calls.find(({ sql }) => sql.includes("FROM products p"));
+    assert.ok(query.sql.includes("p.tenant_id = $1"));
+    assert.ok(query.sql.includes("pr.tenant_id = p.tenant_id"));
+    assert.equal(query.params[0], "tenant-a");
   } finally {
     pool.query = originalQuery;
   }
