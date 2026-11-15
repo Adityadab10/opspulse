@@ -12,6 +12,7 @@ import ProductManagement from "./pages/ProductManagement";
 import SalesManagement from "./pages/SalesManagement";
 import Forecasting from "./pages/Forecasting";
 import InventoryIntelligence from "./pages/InventoryIntelligence";
+import AiAnalyst from "./pages/AiAnalyst";
 
 function StatusBanner() {
   const { apiError, clearApiError } = useAuth();
@@ -140,6 +141,7 @@ export default function App() {
           path="/inventory"
           element={<ProtectedRoute><InventoryIntelligence /></ProtectedRoute>}
         />
+        <Route path="/ai-analyst" element={<ProtectedRoute><AiAnalyst /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

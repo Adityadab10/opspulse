@@ -121,8 +121,8 @@ export const uploadApi = {
 };
 
 export const aiAnalystApi = {
-  ask: (question) =>
-    api.post("/ai-analyst", { question }, {
+  ask: (question, conversation = []) =>
+    api.post("/ai-analyst", { question, conversation }, {
       timeout: 30000,
     }),
 };

@@ -55,11 +55,45 @@ test("proxies grounded AI Analyst responses with only the internal credential", 
     assert.equal(request.options.headers.Authorization, undefined);
     assert.deepEqual(JSON.parse(request.options.body), {
       question: "Explain inventory recommendations",
+      conversation: [],
     });
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl === undefined) delete process.env.ML_ANALYST_URL;
     else process.env.ML_ANALYST_URL = originalUrl;
+    if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
+    else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
+  }
+});
+
+test("forwards bounded conversation context without accepting tenant context from the client", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env.ML_ANALYST_INTERNAL_TOKEN;
+  process.env.ML_ANALYST_INTERNAL_TOKEN = "internal-test-token";
+  let body;
+  globalThis.fetch = async (_url, options) => {
+    body = JSON.parse(options.body);
+    return new Response(JSON.stringify({ answer: "Grounded", sources: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const response = await invoke({ question: "And what about stock?", tenantId: "attacker", conversation: [{ question: "How many sales?", answer: "12" }] }, { authContext: { userId: "user-123", tenantId: "tenant-456" } });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(body.conversation, [{ question: "How many sales?", answer: "12" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
+    else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
+  }
+});
+
+test("rejects malformed conversation turns before contacting the provider", async () => {
+  const originalToken = process.env.ML_ANALYST_INTERNAL_TOKEN;
+  process.env.ML_ANALYST_INTERNAL_TOKEN = "internal-test-token";
+  try {
+    const response = await invoke({ question: "What sold?", conversation: [{ question: "Prior only" }] }, { authContext: { userId: "user-123", tenantId: "tenant-456" } });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /conversation/);
+  } finally {
     if (originalToken === undefined) delete process.env.ML_ANALYST_INTERNAL_TOKEN;
     else process.env.ML_ANALYST_INTERNAL_TOKEN = originalToken;
   }

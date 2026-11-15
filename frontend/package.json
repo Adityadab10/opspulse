@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test src/services/authSupport.test.js src/services/salesSupport.test.js src/services/forecastSupport.test.js src/services/inventorySupport.test.js",
+    "test": "node --test src/services/authSupport.test.js src/services/salesSupport.test.js src/services/forecastSupport.test.js src/services/inventorySupport.test.js src/services/aiAnalystSupport.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

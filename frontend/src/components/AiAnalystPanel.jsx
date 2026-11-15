@@ -1,14 +1,28 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MessageCircle, Send } from "lucide-react";
 import { aiAnalystApi } from "../services/api";
 import { getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
+import { useAuth } from "../auth/authContextValue";
+import { appendConversationTurn, resetAnalystConversation } from "../services/aiAnalystSupport";
 
 export default function AiAnalystPanel() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState(null);
+  const [conversation, setConversation] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const requestId = useRef(0);
+  const { selectedTenantId } = useAuth();
+
+  useEffect(() => {
+    requestId.current += 1;
+    const reset = resetAnalystConversation();
+    setQuestion(reset.question);
+    setAnswer(reset.answer);
+    setConversation(reset.conversation);
+    setError(reset.error);
+    setLoading(false);
+  }, [selectedTenantId]);
 
   const ask = async (event) => {
     event.preventDefault();
@@ -19,9 +33,10 @@ export default function AiAnalystPanel() {
     setLoading(true);
     setError("");
     try {
-      const response = await aiAnalystApi.ask(trimmed);
+      const response = await aiAnalystApi.ask(trimmed, conversation.slice(-8));
       if (currentRequestId !== requestId.current) return;
       setAnswer(response.data);
+      setConversation((current) => appendConversationTurn(current, { question: trimmed, answer: response.data.answer }));
       setQuestion("");
     } catch (requestError) {
       if (currentRequestId !== requestId.current) return;
@@ -67,6 +82,7 @@ export default function AiAnalystPanel() {
       {answer ? (
         <div className="mt-4 rounded-xl border border-cyan-400/20 bg-slate-950/30 p-4">
           <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{answer.answer}</p>
+          {answer.toolActivity?.length ? <p className="mt-3 text-xs text-cyan-200">Checked: {answer.toolActivity.join(", ")}</p> : null}
           <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-400">
             <span>Mode: {answer.category}</span>
             {answer.provenance?.liveData ? <span>Live PostgreSQL data</span> : null}

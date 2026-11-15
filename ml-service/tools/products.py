@@ -32,7 +32,7 @@ def get_product_snapshot(
 
     # Step 1: Resolve product
     product_sql = """
-        SELECT id, name, category, created_at, updated_at, legacy_mongo_id
+        SELECT id, name, category, stock_quantity, reorder_threshold, created_at, updated_at, legacy_mongo_id
         FROM products
         WHERE (id::text = %s OR legacy_mongo_id = %s OR lower(name) = lower(%s))
           AND tenant_id = %s
@@ -66,7 +66,7 @@ def get_product_snapshot(
             SELECT
                 predicted_demand, rule_prediction, ml_prediction, adjusted_prediction,
                 avg_sales, percent_change, confidence, season_tag, decision, impact,
-                keyword, score, reason, contributing_factors, prediction_source, predicted_at
+                keyword, score, reason, contributing_factors, prediction_source, prediction_horizon_days, predicted_at
             FROM predictions
             WHERE product_id = %s AND tenant_id = %s
             ORDER BY predicted_at DESC
@@ -106,6 +106,8 @@ def get_product_snapshot(
                 "id": product_id,
                 "name": product["name"],
                 "category": product["category"],
+                "stock_quantity": product.get("stock_quantity"),
+                "reorder_threshold": product.get("reorder_threshold"),
                 "created_at": product["created_at"],
                 "sales": sales_data,
             },

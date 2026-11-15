@@ -119,7 +119,7 @@ class ToolRegistry:
             description="Evaluate active demand/stockout/overstock risks supported by schema.",
             input_schema=InventoryRiskInput,
             output_schema=InventoryRiskOutput,
-            authorized_agents=["supervisor", "inventory_agent"],
+            authorized_agents=["supervisor", "inventory_agent", "business_analyst"],
             handler=get_inventory_risk,
         )
         self.register(

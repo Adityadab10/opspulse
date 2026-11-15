@@ -79,6 +79,9 @@ export default function Sidebar() {
         <NavLink to="/inventory" className={linkClass}>
           <span className="flex items-center space-x-2"><span>🧭</span><span>Inventory Intelligence</span></span>
         </NavLink>
+        <NavLink to="/ai-analyst" className={linkClass}>
+          <span className="flex items-center space-x-2"><span>💬</span><span>AI Analyst</span></span>
+        </NavLink>
         <NavLink to="/dashboard#news-insights" className={linkClass}>
           <span className="flex items-center space-x-2">
             <span>📰</span>

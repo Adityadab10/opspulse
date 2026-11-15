@@ -1,9 +1,4 @@
-"""Deterministic inventory risk tools for OpsPulse.
-
-Operates strictly on indicators supported by the actual schema (active alerts,
-demand predictions, and sales velocity) without fabricating missing inventory,
-cost, or margin records.
-"""
+"""Read-only, tenant-scoped inventory health tool backed by stock and forecasts."""
 
 from __future__ import annotations
 
@@ -19,67 +14,52 @@ def get_inventory_risk(
     payload: InventoryRiskInput,
     db: DatabaseAdapter | None = None,
 ) -> InventoryRiskOutput:
-    """Evaluate inventory risk indicators from active alerts and prediction decisions with tenant scoping."""
+    """Evaluate low stock, stockout, and overstock from supported stored data."""
     adapter = db or DatabaseAdapter()
-    if not (adapter.has_tenant_column("alerts") and adapter.has_tenant_column("products") and adapter.has_tenant_column("predictions")):
+    if not (adapter.has_tenant_column("products") and adapter.has_tenant_column("predictions")):
         return InventoryRiskOutput(
             success=False,
             error="Tenant isolation schema not established: core tables lack 'tenant_id'. Apply migration 005_tenant_isolation.sql.",
             limitations=["Database schema not ready for tenant-isolated execution"],
         )
 
-    conditions = ["a.is_active = true", "a.tenant_id = %s", "p.tenant_id = %s"]
-    params: list[Any] = [tenant_id, tenant_id]
+    conditions = ["p.tenant_id = %s"]
+    params: list[Any] = [tenant_id]
 
     if payload.product_id:
-        conditions.append("a.product_id::text = %s")
+        conditions.append("p.id::text = %s")
         params.append(str(payload.product_id))
-
-    if payload.severity_filter:
-        conditions.append("a.severity = %s")
-        params.append(payload.severity_filter.upper())
 
     where_clause = "WHERE " + " AND ".join(conditions)
 
     sql = f"""
         SELECT
-            a.id AS alert_id,
-            a.product_id,
+            p.id AS product_id,
             p.name AS product_name,
             p.category,
-            a.type AS alert_type,
-            a.severity,
-            a.message,
-            a.percent_change,
-            a.created_at AS alert_created_at,
-            pr.decision AS prediction_decision,
-            pr.confidence AS prediction_confidence,
+            p.stock_quantity,
+            p.reorder_threshold,
             pr.predicted_demand,
+            pr.prediction_horizon_days,
             CASE
-                WHEN a.type IN ('HIGH_DEMAND', 'TREND_UP') THEN 'potential_stockout_risk'
-                WHEN a.type IN ('LOW_DEMAND', 'TREND_DOWN') THEN 'potential_overstock_risk'
-                ELSE 'general_risk'
+                WHEN pr.predicted_demand IS NULL THEN 'forecast_unavailable'
+                WHEN p.stock_quantity < pr.predicted_demand THEN 'stockout_risk'
+                WHEN pr.predicted_demand > 0 AND p.stock_quantity >= pr.predicted_demand * 2 THEN 'overstock'
+                WHEN p.stock_quantity <= p.reorder_threshold THEN 'low_stock'
+                ELSE 'healthy'
             END AS risk_category
-        FROM alerts a
-        JOIN products p ON p.id = a.product_id AND p.tenant_id = a.tenant_id
-        LEFT JOIN predictions pr ON pr.product_id = a.product_id AND pr.tenant_id = a.tenant_id
+        FROM products p
+        LEFT JOIN predictions pr ON pr.product_id = p.id AND pr.tenant_id = p.tenant_id
         {where_clause}
-        ORDER BY
-            CASE a.severity
-                WHEN 'HIGH' THEN 1
-                WHEN 'MEDIUM' THEN 2
-                WHEN 'LOW' THEN 3
-                ELSE 4
-            END,
-            a.created_at DESC
+        ORDER BY p.name
         LIMIT 50
     """
 
     try:
         rows = adapter.query(sql, tuple(params))
 
-        high_demand_count = sum(1 for r in rows if r.get("alert_type") in ("HIGH_DEMAND", "TREND_UP"))
-        low_demand_count = sum(1 for r in rows if r.get("alert_type") in ("LOW_DEMAND", "TREND_DOWN"))
+        high_demand_count = sum(1 for r in rows if r.get("risk_category") == "stockout_risk")
+        low_demand_count = sum(1 for r in rows if r.get("risk_category") == "overstock")
 
         evidence = SqlEvidence(
             source_name="alerts",
@@ -94,10 +74,10 @@ def get_inventory_risk(
         )
 
         limitations = [
-            "Inventory risk is derived from active sales alerts and demand forecasts; physical stock levels and warehouse counts are not stored in the schema.",
+            "Reorder advice is advisory: it compares current stock to persisted forecast demand. Supplier lead time is not available.",
         ]
         if not rows:
-            limitations.append("No active inventory risk alerts found for the specified criteria.")
+            limitations.append("No products matched the specified criteria.")
 
         return InventoryRiskOutput(
             success=True,

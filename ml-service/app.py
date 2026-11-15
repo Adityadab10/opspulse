@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 
@@ -100,10 +100,18 @@ class NewsInsightsRequest(BaseModel):
     productName: Optional[str] = None
 
 
+class ConversationTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=1000)
+    answer: str = Field(min_length=1, max_length=4000)
+
+
 class AnalystRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str
+    question: str = Field(min_length=1, max_length=1000)
+    conversation: list[ConversationTurn] = []
 
 
 class ExecuteToolRequest(BaseModel):
@@ -555,6 +563,7 @@ async def ai_analyst(
                 question=question,
                 tenant_id=context.tenant_id,
                 user_id=context.user_id,
+                conversation=[turn.model_dump() for turn in payload.conversation[-8:]],
             )
         )
     except ProviderUnavailable as exc:

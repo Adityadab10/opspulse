@@ -103,13 +103,13 @@ export const requestMlService = async ({
   }
 };
 
-export const requestMlAnalyst = async ({ question, userId, tenantId, correlationId }) => {
+export const requestMlAnalyst = async ({ question, conversation = [], userId, tenantId, correlationId }) => {
   const config = getMlAnalystConfig();
   return requestMlService({
     url: config.url,
     timeoutMs: config.timeoutMs,
     internalToken: config.internalToken,
-    body: { question },
+    body: { question, conversation },
     userId,
     tenantId,
     correlationId,

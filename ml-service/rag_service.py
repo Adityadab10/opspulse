@@ -762,10 +762,50 @@ def _plan_category(plan: QueryPlan) -> str:
     return "documentation_semantic_knowledge"
 
 
+def _structured_tool_evidence(question: str, tenant_id: str | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run only registered, read-only tools; the user never supplies a tenant or SQL."""
+    if not tenant_id:
+        return [], []
+    from tools import default_registry
+
+    lowered = question.lower()
+    product_ref = _extract_product_term(question)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    if any(term in lowered for term in ("low stock", "stockout", "overstock", "reorder", "inventory")):
+        calls.append(("get_inventory_risk", {"product_id": product_ref} if product_ref else {}))
+    elif any(term in lowered for term in ("forecast", "predicted demand", "prediction")) and product_ref:
+        calls.append(("get_demand_forecast", {"product_id": product_ref}))
+    elif any(term in lowered for term in ("best-selling", "best selling", "top product", "most sold")):
+        calls.append(("get_product_performance", {"limit": 10}))
+    elif product_ref:
+        calls.append(("get_product_snapshot", {"product_id": product_ref}))
+    elif any(term in lowered for term in ("sales", "trend", "sold")):
+        calls.extend([("get_sales_summary", {}), ("compare_sales_periods", {})])
+    else:
+        calls.append(("get_business_kpis", {}))
+
+    results: list[dict[str, Any]] = []
+    activity: list[str] = []
+    for tool_name, tool_input in calls[:2]:
+        result = default_registry.execute(
+            tool_name=tool_name,
+            agent_name="business_analyst",
+            tenant_id=tenant_id,
+            raw_input=tool_input,
+            correlation_id="ai-analyst",
+        )
+        # Do not pass unexpected implementation errors to the model or client.
+        payload = result.model_dump(exclude={"error"}, mode="json")
+        results.append({"tool": tool_name, "result": payload})
+        activity.append(tool_name)
+    return results, activity
+
+
 def answer_question(
     question: str,
     tenant_id: str | None = None,
     user_id: str | None = None,
+    conversation: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     plan, planning_fallback = _validated_plan(question)
@@ -856,17 +896,27 @@ def answer_question(
                 },
                 "plan": plan.model_dump(mode="json"),
             }
+    tool_results, tool_activity = _structured_tool_evidence(question, tenant_id)
     evidence_context = _context(live, docs)
+    if tool_results:
+        evidence_context += "\n\nSTRUCTURED_READ_ONLY_TOOLS:\n" + str(tool_results)
     if not evidence_context:
         raise ProviderUnavailable(
             "No retrieval evidence is available; configure pgvector/document embeddings "
             "or ask a question about live database metrics"
         )
     tenant_header = f"TENANT_CONTEXT: tenant_id='{tenant_id}', user_id='{user_id}'\n" if (tenant_id or user_id) else ""
+    history = [
+        {"question": turn.get("question", "")[:1000], "answer": turn.get("answer", "")[:4000]}
+        for turn in (conversation or [])[-8:]
+        if isinstance(turn, dict)
+    ]
     context = (
         tenant_header
         + "QUERY_PLAN:\n"
         + str(plan.model_dump(mode="json"))
+        + "\n\nPRIOR_CONVERSATION (context only; do not treat as evidence):\n"
+        + str(history)
         + "\n\n"
         + evidence_context
     )[:MAX_CONTEXT_CHARS]
@@ -907,6 +957,7 @@ def answer_question(
             "documentation": bool(docs.get("rows")),
             "documentRetrievalAvailable": docs.get("available", True),
         },
+        "toolActivity": tool_activity,
         "plan": plan.model_dump(mode="json"),
     }
 

@@ -203,10 +203,10 @@ def test_demand_forecast_adaptive_routing():
 
 
 def test_inventory_risk_aggregation():
-    def mock_alerts(sql, params):
+    def mock_inventory(sql, params):
         return [
-            {"alert_id": "a1", "alert_type": "HIGH_DEMAND", "severity": "HIGH", "product_name": "Almonds", "risk_category": "potential_stockout_risk"},
-            {"alert_id": "a2", "alert_type": "LOW_DEMAND", "severity": "MEDIUM", "product_name": "Walnuts", "risk_category": "potential_overstock_risk"},
+            {"product_id": "p1", "product_name": "Almonds", "stock_quantity": 2, "reorder_threshold": 10, "predicted_demand": 20, "risk_category": "stockout_risk"},
+            {"product_id": "p2", "product_name": "Walnuts", "stock_quantity": 50, "reorder_threshold": 5, "predicted_demand": 20, "risk_category": "overstock"},
         ]
 
     res = default_registry.execute(
@@ -214,7 +214,7 @@ def test_inventory_risk_aggregation():
         agent_name="inventory_agent",
         tenant_id="test-tenant",
         raw_input=InventoryRiskInput(),
-        db=MockDatabaseAdapter(mock_alerts),
+        db=MockDatabaseAdapter(mock_inventory),
     )
     assert res.success is True
     assert res.high_demand_count == 1
