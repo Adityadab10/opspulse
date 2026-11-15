@@ -11,6 +11,8 @@ import {
   getSalesByProductId,
   importCsvSales,
   getAllProducts,
+  getSalesHistory,
+  insertSale,
   updateProduct,
   resolveProduct,
   upsertPrediction,
@@ -180,6 +182,38 @@ test("product search and updates keep the trusted tenant predicate", async () =>
     await updateProduct("tenant-a", "product-a", "Almonds", "Snacks");
     const dataCalls = calls.filter(({ sql }) => sql.includes("FROM products") || sql.includes("UPDATE products"));
     assert.ok(dataCalls.length >= 3);
+    assert.ok(dataCalls.every(({ sql, params }) => sql.includes("tenant_id") && params.includes("tenant-a")));
+  } finally {
+    pool.query = originalQuery;
+  }
+});
+
+test("sales history and inserts remain tenant-scoped", async () => {
+  const originalQuery = pool.query;
+  const calls = [];
+  pool.query = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes("legacy_mongo_id =")) {
+      return { rows: [{ id: "product-a", name: "Almonds", category: "Food", legacy_mongo_id: null }] };
+    }
+    if (sql.includes("FROM sales s")) {
+      return { rows: [{ id: "sale-a", product_id: "product-a", product_name: "Almonds", quantity: 2 }] };
+    }
+    if (sql.includes("INSERT INTO sales")) {
+      return { rows: [{ id: "sale-a", product_id: "product-a", sale_date: new Date("2026-01-01"), quantity: 2 }] };
+    }
+    return { rows: [] };
+  };
+
+  try {
+    await getSalesHistory("tenant-a", {
+      productId: "product-a",
+      startDate: new Date("2026-01-01"),
+      endDateExclusive: new Date("2026-02-01"),
+    });
+    await insertSale("tenant-a", "product-a", new Date("2026-01-02"), 2);
+    const dataCalls = calls.filter(({ sql }) => sql.includes("FROM sales s") || sql.includes("INSERT INTO sales"));
+    assert.ok(dataCalls.length >= 2);
     assert.ok(dataCalls.every(({ sql, params }) => sql.includes("tenant_id") && params.includes("tenant-a")));
   } finally {
     pool.query = originalQuery;

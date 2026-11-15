@@ -1,5 +1,12 @@
-import { insertSale, isProductReference, resolveProduct, getSalesByProductId } from "../config/postgres.js";
+import {
+  getSalesByProductId,
+  getSalesHistory,
+  insertSale,
+  isProductReference,
+  resolveProduct,
+} from "../config/postgres.js";
 import { sendBackendError } from "../helpers/errorResponse.js";
+import { DashboardDateRangeError, getDashboardDateRange } from "../services/dashboardMetrics.js";
 
 const toSalesResponse = ({ sale, product }) => ({
   _id: sale.id,
@@ -23,6 +30,11 @@ export const addSales = async (req, res) => {
     if (!productId || !date || quantity === undefined) {
       return res.status(400).json({
         message: "productId, date, and quantity are required",
+        errors: {
+          ...(!productId ? { productId: "productId is required" } : {}),
+          ...(!date ? { date: "date is required" } : {}),
+          ...(quantity === undefined ? { quantity: "quantity is required" } : {}),
+        },
       });
     }
 
@@ -42,10 +54,61 @@ export const addSales = async (req, res) => {
     if (!result) {
       return res.status(404).json({ message: "Product not found" });
     }
+    if (!result.sale) {
+      return res.status(409).json({ message: "Sale could not be recorded because the transaction is no longer available" });
+    }
+    if (!result.inserted) {
+      return res.status(409).json({ message: "A sale for this product and timestamp already exists" });
+    }
 
     return res.status(201).json(toSalesResponse(result));
   } catch (error) {
     return sendBackendError(res, "Failed to add sales", error);
+  }
+};
+
+export const getSalesHistoryController = async (req, res) => {
+  try {
+    const { productId, start, end } = req.query || {};
+    if (productId !== undefined && !isProductReference(productId)) {
+      return res.status(400).json({ message: "Invalid productId" });
+    }
+    let dateRange;
+    try {
+      dateRange = getDashboardDateRange({ start, end });
+    } catch (error) {
+      if (error instanceof DashboardDateRangeError) {
+        return res.status(400).json({ message: error.message });
+      }
+      throw error;
+    }
+
+    let resolvedProductId = null;
+    if (productId) {
+      const product = await resolveProduct(req.authContext.tenantId, productId);
+      if (!product || product.legacy_mongo_id === "test123") {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      resolvedProductId = product.id;
+    }
+
+    const sales = await getSalesHistory(req.authContext.tenantId, {
+      productId: resolvedProductId,
+      startDate: dateRange.startDate,
+      endDateExclusive: dateRange.endDateExclusive,
+    });
+    return res.status(200).json(sales.map((sale) => ({
+      _id: sale.id,
+      id: sale.id,
+      productId: sale.product_id,
+      productName: sale.product_name,
+      productCategory: sale.product_category,
+      date: sale.sale_date,
+      quantity: sale.quantity,
+      createdAt: sale.created_at,
+    })));
+  } catch (error) {
+    return sendBackendError(res, "Failed to fetch sales history", error);
   }
 };
 

@@ -9,6 +9,7 @@ import Dashboard from "./pages/Dashboard";
 import Upload from "./pages/Upload";
 import Alerts from "./pages/Alerts";
 import ProductManagement from "./pages/ProductManagement";
+import SalesManagement from "./pages/SalesManagement";
 
 function StatusBanner() {
   const { apiError, clearApiError } = useAuth();
@@ -124,6 +125,10 @@ export default function App() {
         <Route
           path="/products"
           element={<ProtectedRoute><ProductManagement /></ProtectedRoute>}
+        />
+        <Route
+          path="/sales"
+          element={<ProtectedRoute><SalesManagement /></ProtectedRoute>}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

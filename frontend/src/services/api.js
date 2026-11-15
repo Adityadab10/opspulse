@@ -72,6 +72,11 @@ export const productsApi = {
   remove: (productId) => api.delete(`/products/${encodeURIComponent(productId)}`),
 };
 
+export const salesApi = {
+  getHistory: (params = {}) => api.get("/sales", { params }),
+  create: (sale) => api.post("/sales", sale),
+};
+
 export const predictionApi = {
   getPredictions: (params = {}) => api.get("/predictions", { params }),
   runPrediction: (productId, params = {}) =>

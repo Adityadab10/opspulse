@@ -184,6 +184,34 @@ const getAllSales = async (tenantId) => {
   return result.rows;
 };
 
+const getSalesHistory = async (tenantId, { productId = null, startDate = null, endDateExclusive = null } = {}) => {
+  const tenant = await withTenant(tenantId);
+  const conditions = ["s.tenant_id = $1", "COALESCE(p.legacy_mongo_id, '') <> 'test123'"];
+  const params = [tenant];
+  if (productId) {
+    params.push(productId);
+    conditions.push(`s.product_id = $${params.length}`);
+  }
+  if (startDate) {
+    params.push(startDate);
+    conditions.push(`s.sale_date >= $${params.length}`);
+  }
+  if (endDateExclusive) {
+    params.push(endDateExclusive);
+    conditions.push(`s.sale_date < $${params.length}`);
+  }
+  const result = await pool.query(
+    `SELECT s.id, s.product_id, p.name AS product_name, p.category AS product_category,
+            s.sale_date, s.quantity, s.created_at
+     FROM sales s
+     JOIN products p ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY s.sale_date DESC, s.created_at DESC`,
+    params,
+  );
+  return result.rows;
+};
+
 const countActiveAlerts = async (tenantId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query('SELECT COUNT(*) AS cnt FROM alerts WHERE tenant_id = $1 AND is_active = true', [tenant]);
@@ -657,6 +685,7 @@ export {
   getSalesByProductId,
   getSalesSeriesByProductId,
   getAllSales,
+  getSalesHistory,
   countActiveAlerts,
   countAllActiveAlerts,
   getPredictionByProductId,
