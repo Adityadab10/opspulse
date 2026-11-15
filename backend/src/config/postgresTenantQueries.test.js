@@ -10,6 +10,8 @@ import {
   getProductById,
   getSalesByProductId,
   importCsvSales,
+  getAllProducts,
+  updateProduct,
   resolveProduct,
   upsertPrediction,
 } from "./postgres.js";
@@ -154,6 +156,34 @@ test("product resolution scopes the client product reference by tenant", async (
   const productLookup = queryCalls.find(({ sql }) => sql.includes("FROM products"));
   assert.equal(productLookup.params[0], "tenant-b");
   assert.ok(productLookup.sql.includes("tenant_id = $1"));
+});
+
+test("product search and updates keep the trusted tenant predicate", async () => {
+  const originalQuery = pool.query;
+  const calls = [];
+  pool.query = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes("FROM products") && sql.includes("ILIKE")) {
+      return { rows: [{ id: "product-a", name: "Almonds", category: "Food" }] };
+    }
+    if (sql.startsWith("SELECT id, name, category, legacy_mongo_id") && sql.includes("legacy_mongo_id =")) {
+      return { rows: [{ id: "product-a", name: "Almonds", category: "Food" }] };
+    }
+    if (sql.includes("UPDATE products")) {
+      return { rows: [{ id: "product-a", name: "Almonds", category: "Snacks" }] };
+    }
+    return { rows: [] };
+  };
+
+  try {
+    await getAllProducts("tenant-a", "created_at", "almond");
+    await updateProduct("tenant-a", "product-a", "Almonds", "Snacks");
+    const dataCalls = calls.filter(({ sql }) => sql.includes("FROM products") || sql.includes("UPDATE products"));
+    assert.ok(dataCalls.length >= 3);
+    assert.ok(dataCalls.every(({ sql, params }) => sql.includes("tenant_id") && params.includes("tenant-a")));
+  } finally {
+    pool.query = originalQuery;
+  }
 });
 
 test("prediction upserts use tenant-aware uniqueness", async () => {

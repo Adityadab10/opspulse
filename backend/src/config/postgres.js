@@ -65,21 +65,24 @@ const isProductReference = (value) => {
   return UUID_PATTERN.test(reference) || LEGACY_MONGO_ID_PATTERN.test(reference);
 };
 
-const getAllProducts = async (tenantId, sort = 'name') => {
+const getAllProducts = async (tenantId, sort = 'name', search = '') => {
   const tenant = await withTenant(tenantId);
   const orderBy = sort === 'created_at' ? 'created_at DESC' : 'name';
+  const normalizedSearch = String(search || '').trim();
+  const searchClause = normalizedSearch ? 'AND (name ILIKE $2 OR category ILIKE $2)' : '';
+  const params = normalizedSearch ? [tenant, `%${normalizedSearch}%`] : [tenant];
   const result = await pool.query(`
     SELECT id, name, category, created_at, updated_at, legacy_mongo_id
     FROM products
-    WHERE tenant_id = $1 AND COALESCE(legacy_mongo_id, '') <> 'test123'
-    ORDER BY ${orderBy}`, [tenant]);
+    WHERE tenant_id = $1 AND COALESCE(legacy_mongo_id, '') <> 'test123' ${searchClause}
+    ORDER BY ${orderBy}`, params);
   return result.rows;
 };
 
 const getProductById = async (tenantId, productId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    'SELECT id, name, category, legacy_mongo_id FROM products WHERE tenant_id = $1 AND id = $2',
+    'SELECT id, name, category, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
     [tenant, productId],
   );
   return result.rows[0] || null;
@@ -88,7 +91,7 @@ const getProductById = async (tenantId, productId) => {
 const getProductByLegacyId = async (tenantId, legacyMongoId) => {
   const tenant = await withTenant(tenantId);
   const result = await pool.query(
-    'SELECT id, name, category, legacy_mongo_id FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
+    'SELECT id, name, category, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
     [tenant, legacyMongoId],
   );
   return result.rows[0] || null;
@@ -295,13 +298,97 @@ const createProduct = async (tenantId, name, category) => {
   return result.rows[0] || null;
 };
 
+const findProductByNameAndCategory = async (tenantId, name, category, excludeProductId = null) => {
+  const tenant = await withTenant(tenantId);
+  const result = await pool.query(
+    `SELECT id, name, category, legacy_mongo_id, created_at, updated_at
+     FROM products
+     WHERE tenant_id = $1
+       AND lower(name) = lower($2)
+       AND lower(category) = lower($3)
+       AND ($4::uuid IS NULL OR id <> $4::uuid)
+     LIMIT 1`,
+    [tenant, String(name).trim(), String(category).trim(), excludeProductId],
+  );
+  return result.rows[0] || null;
+};
+
+const updateProduct = async (tenantId, productReference, name, category) => {
+  const tenant = await withTenant(tenantId);
+  const product = await resolveProduct(tenant, productReference);
+  if (!product) return null;
+  const result = await pool.query(
+    `UPDATE products
+     SET name = $1, category = $2, updated_at = now()
+     WHERE tenant_id = $3 AND id = $4
+     RETURNING id, name, category, legacy_mongo_id, created_at, updated_at`,
+    [String(name).trim(), String(category).trim(), tenant, product.id],
+  );
+  return result.rows[0] || null;
+};
+
+const getProductDependencies = async (tenantId, productReference) => {
+  const tenant = await withTenant(tenantId);
+  const product = await resolveProduct(tenant, productReference);
+  if (!product) return null;
+  const result = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM sales WHERE tenant_id = $1 AND product_id = $2) AS sales_count,
+       (SELECT COUNT(*) FROM predictions WHERE tenant_id = $1 AND product_id = $2) AS predictions_count,
+       (SELECT COUNT(*) FROM alerts WHERE tenant_id = $1 AND product_id = $2) AS alerts_count`,
+    [tenant, product.id],
+  );
+  return { product, ...result.rows[0] };
+};
+
+const deleteProduct = async (tenantId, productReference) => {
+  const tenant = await withTenant(tenantId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureTenantSchema(client);
+    const productResult = await client.query(
+      `SELECT id, name, category, legacy_mongo_id, created_at, updated_at
+       FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+      [tenant, productReference],
+    );
+    const product = productResult.rows[0] || null;
+    if (!product) {
+      await client.query('COMMIT');
+      return null;
+    }
+    const dependencies = await client.query(
+      `SELECT
+         (SELECT COUNT(*) FROM sales WHERE tenant_id = $1 AND product_id = $2) AS sales_count,
+         (SELECT COUNT(*) FROM predictions WHERE tenant_id = $1 AND product_id = $2) AS predictions_count,
+         (SELECT COUNT(*) FROM alerts WHERE tenant_id = $1 AND product_id = $2) AS alerts_count`,
+      [tenant, product.id],
+    );
+    const dependencyCounts = dependencies.rows[0];
+    const hasDependencies = ["sales_count", "predictions_count", "alerts_count"]
+      .some((field) => Number(dependencyCounts[field]) > 0);
+    if (hasDependencies) {
+      await client.query('COMMIT');
+      return { product, deleted: false, ...dependencyCounts };
+    }
+    await client.query('DELETE FROM products WHERE tenant_id = $1 AND id = $2', [tenant, product.id]);
+    await client.query('COMMIT');
+    return { product, deleted: true, sales_count: 0, predictions_count: 0, alerts_count: 0 };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const resolveProduct = async (tenantId, productReference, queryable = pool) => {
   const tenant = await withTenant(tenantId, queryable);
   const reference = String(productReference || '').trim();
   if (!reference) return null;
 
   const legacyResult = await queryable.query(
-    'SELECT id, name, category, legacy_mongo_id FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
+    'SELECT id, name, category, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND legacy_mongo_id = $2',
     [tenant, reference],
   );
   if (legacyResult.rows.length > 1) {
@@ -311,7 +398,7 @@ const resolveProduct = async (tenantId, productReference, queryable = pool) => {
 
   if (!UUID_PATTERN.test(reference)) return null;
   const uuidResult = await queryable.query(
-    'SELECT id, name, category, legacy_mongo_id FROM products WHERE tenant_id = $1 AND id = $2',
+    'SELECT id, name, category, legacy_mongo_id, created_at, updated_at FROM products WHERE tenant_id = $1 AND id = $2',
     [tenant, reference],
   );
   return uuidResult.rows[0] || null;
@@ -577,6 +664,10 @@ export {
   countAllPredictions,
   upsertPrediction,
   createProduct,
+  findProductByNameAndCategory,
+  updateProduct,
+  getProductDependencies,
+  deleteProduct,
   resolveProduct,
   insertSale,
   importCsvSales,

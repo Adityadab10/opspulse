@@ -65,7 +65,11 @@ export const dashboardApi = {
 
 export const productsApi = {
   getAnalysis: () => api.get("/products/analysis"),
-  getAll: () => api.get("/products"),
+  getAll: (params = {}) => api.get("/products", { params }),
+  getById: (productId) => api.get(`/products/${encodeURIComponent(productId)}`),
+  create: (product) => api.post("/products", product),
+  update: (productId, product) => api.patch(`/products/${encodeURIComponent(productId)}`, product),
+  remove: (productId) => api.delete(`/products/${encodeURIComponent(productId)}`),
 };
 
 export const predictionApi = {

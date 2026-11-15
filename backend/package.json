@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "node --test db/scripts/tests.js src/middleware/firebaseAuth.test.js src/middleware/tenantContext.test.js src/middleware/correlationId.test.js src/middleware/mlServiceAuth.test.js src/services/dashboardMetrics.test.js src/services/mlAnalystClient.test.js src/config/postgresTenantQueries.test.js src/controllers/aiAnalystController.test.js src/controllers/dashboardController.test.js src/controllers/predictionController.test.js src/routes/predictionRoutes.test.js src/routes/protectedRoutes.test.js src/helpers/errorResponse.test.js",
+    "test": "node --test db/scripts/tests.js src/middleware/firebaseAuth.test.js src/middleware/tenantContext.test.js src/middleware/correlationId.test.js src/middleware/mlServiceAuth.test.js src/services/dashboardMetrics.test.js src/services/productValidation.test.js src/services/mlAnalystClient.test.js src/config/postgresTenantQueries.test.js src/controllers/aiAnalystController.test.js src/controllers/dashboardController.test.js src/controllers/predictionController.test.js src/controllers/productController.test.js src/routes/predictionRoutes.test.js src/routes/protectedRoutes.test.js src/helpers/errorResponse.test.js",
     "test:integration": "node --test --test-concurrency=1 src/integration/postgresTenantIsolation.integration.test.js"
   },
   "keywords": [],
