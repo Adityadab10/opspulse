@@ -82,6 +82,47 @@ function ProductForm({ initialValue = emptyForm, submitLabel, onSubmit, onCancel
   );
 }
 
+function StockForm({ product, onUpdated }) {
+  const [mode, setMode] = useState(product.stockQuantity === 0 ? "set" : "adjust");
+  const [quantity, setQuantity] = useState(product.stockQuantity === 0 ? "" : "");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    const numeric = Number(quantity);
+    if (!Number.isInteger(numeric) || (mode === "set" ? numeric < 0 : numeric === 0)) {
+      setError(mode === "set" ? "Enter a non-negative whole-number balance." : "Enter a non-zero whole-number adjustment.");
+      return;
+    }
+    if (!reason.trim()) { setError("A reason is required."); return; }
+    try {
+      setSubmitting(true);
+      setError("");
+      await productsApi.adjustStock(product.id, { mode, quantity: numeric, reason: reason.trim() });
+      setQuantity("");
+      setReason("");
+      await onUpdated();
+    } catch (requestError) {
+      setError(getSafeApiErrorMessage(requestError, "Unable to update stock."));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return <form onSubmit={submit} className="mt-5 space-y-3 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-4">
+    <p className="text-sm font-semibold text-emerald-100">Stock management</p>
+    <div className="grid gap-3 sm:grid-cols-3">
+      <select aria-label="Stock operation" value={mode} onChange={(event) => setMode(event.target.value)} className="rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100"><option value="set">Initialize/set balance</option><option value="adjust">Adjust balance</option></select>
+      <input aria-label="Stock quantity" type="number" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder={mode === "set" ? "Target balance" : "Change (+/-)"} className="rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+      <input aria-label="Stock reason" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={255} placeholder="Reason" className="rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+    </div>
+    {error ? <p className="text-sm text-red-300">{error}</p> : null}
+    <button type="submit" disabled={submitting} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{submitting ? "Saving..." : "Save stock"}</button>
+  </form>;
+}
+
 const formatDate = (value) => value ? new Date(value).toLocaleDateString() : "—";
 
 export default function ProductManagement() {
@@ -164,7 +205,7 @@ export default function ProductManagement() {
   };
 
   const remove = async () => {
-    if (!window.confirm(`Delete ${product.name}? Products with related sales or analytics cannot be deleted.`)) return;
+    if (!window.confirm(`Delete ${product.name}? Products with related sales, analytics, or stock movements cannot be deleted.`)) return;
     try {
       await productsApi.remove(product.id);
       navigate("/products", { replace: true });
@@ -187,8 +228,9 @@ export default function ProductManagement() {
               </div>
               {notice ? <p className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3 text-sm text-emerald-200">{notice}</p> : null}
               {editing ? <ProductForm initialValue={{ name: product.name, category: product.category }} submitLabel="Save changes" onSubmit={update} onCancel={() => setEditing(false)} /> : (
-                <div className="grid gap-4 sm:grid-cols-2"><Detail label="Category" value={product.category} /><Detail label="Created" value={formatDate(product.createdAt)} /><Detail label="Last updated" value={formatDate(product.updatedAt)} /><Detail label="Product ID" value={product.id} /></div>
+                <div className="grid gap-4 sm:grid-cols-2"><Detail label="Category" value={product.category} /><Detail label="Current stock" value={product.stockQuantity === null ? "Unavailable until migration 006" : product.stockQuantity} /><Detail label="Created" value={formatDate(product.createdAt)} /><Detail label="Last updated" value={formatDate(product.updatedAt)} /><Detail label="Product ID" value={product.id} /></div>
               )}
+              {product.stockQuantity !== null ? <StockForm product={product} onUpdated={loadProduct} /> : null}
             </>
           ) : null}
         </main>
@@ -205,7 +247,7 @@ export default function ProductManagement() {
         {formOpen ? <ProductForm submitLabel="Create product" onSubmit={create} onCancel={() => setFormOpen(false)} /> : null}
         <form onSubmit={(event) => { event.preventDefault(); setSearch(searchInput.trim()); }} className="flex max-w-xl gap-2"><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Search name or category" className="min-w-0 flex-1 rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100" /><button type="submit" className="rounded-lg border border-slate-500/30 px-4 py-2 text-sm font-semibold text-slate-200">Search</button>{search ? <button type="button" onClick={() => { setSearch(""); setSearchInput(""); }} className="rounded-lg border border-slate-500/30 px-3 py-2 text-sm text-slate-300">Clear</button> : null}</form>
         {loading ? <p className="text-slate-300">Loading products...</p> : error ? <ErrorState message={error} onRetry={loadProducts} /> : products.length === 0 ? <div className="rounded-2xl border border-slate-500/20 bg-slate-900/40 p-8 text-center text-slate-400">{search ? "No products match your search." : "No products yet. Add the first product to start your catalogue."}</div> : (
-          <div className="overflow-x-auto rounded-2xl border border-purple-500/20 bg-slate-900/40"><table className="min-w-full text-left text-sm"><thead className="border-b border-purple-500/20 text-slate-300"><tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Created</th><th className="px-4 py-3">Actions</th></tr></thead><tbody>{products.map((item) => <tr key={item.id} className="border-b border-slate-500/10 text-slate-200"><td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.category}</td><td className="px-4 py-3 text-slate-400">{formatDate(item.createdAt)}</td><td className="px-4 py-3"><Link to={`/products/${item.id}`} className="text-purple-300 hover:text-purple-200">View details</Link></td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto rounded-2xl border border-purple-500/20 bg-slate-900/40"><table className="min-w-full text-left text-sm"><thead className="border-b border-purple-500/20 text-slate-300"><tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Current stock</th><th className="px-4 py-3">Created</th><th className="px-4 py-3">Actions</th></tr></thead><tbody>{products.map((item) => <tr key={item.id} className="border-b border-slate-500/10 text-slate-200"><td className="px-4 py-3 font-semibold">{item.name}</td><td className="px-4 py-3">{item.category}</td><td className="px-4 py-3">{item.stockQuantity === null ? "—" : item.stockQuantity}</td><td className="px-4 py-3 text-slate-400">{formatDate(item.createdAt)}</td><td className="px-4 py-3"><Link to={`/products/${item.id}`} className="text-purple-300 hover:text-purple-200">View details</Link></td></tr>)}</tbody></table></div>
         )}
       </main>
     </div>

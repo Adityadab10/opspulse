@@ -70,6 +70,8 @@ export const productsApi = {
   create: (product) => api.post("/products", product),
   update: (productId, product) => api.patch(`/products/${encodeURIComponent(productId)}`, product),
   remove: (productId) => api.delete(`/products/${encodeURIComponent(productId)}`),
+  adjustStock: (productId, adjustment) => api.post(`/products/${encodeURIComponent(productId)}/stock`, adjustment),
+  getStockMovements: (productId) => api.get(`/products/${encodeURIComponent(productId)}/stock/movements`),
 };
 
 export const salesApi = {

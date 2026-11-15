@@ -13,6 +13,7 @@ import {
   getAllProducts,
   getSalesHistory,
   insertSale,
+  adjustProductStock,
   updateProduct,
   resolveProduct,
   upsertPrediction,
@@ -168,7 +169,7 @@ test("product search and updates keep the trusted tenant predicate", async () =>
     if (sql.includes("FROM products") && sql.includes("ILIKE")) {
       return { rows: [{ id: "product-a", name: "Almonds", category: "Food" }] };
     }
-    if (sql.startsWith("SELECT id, name, category, legacy_mongo_id") && sql.includes("legacy_mongo_id =")) {
+    if (sql.startsWith("SELECT id, name, category, stock_quantity") && sql.includes("legacy_mongo_id =")) {
       return { rows: [{ id: "product-a", name: "Almonds", category: "Food" }] };
     }
     if (sql.includes("UPDATE products")) {
@@ -190,6 +191,7 @@ test("product search and updates keep the trusted tenant predicate", async () =>
 
 test("sales history and inserts remain tenant-scoped", async () => {
   const originalQuery = pool.query;
+  const originalConnect = pool.connect;
   const calls = [];
   pool.query = async (sql, params) => {
     calls.push({ sql, params });
@@ -204,6 +206,19 @@ test("sales history and inserts remain tenant-scoped", async () => {
     }
     return { rows: [] };
   };
+  pool.connect = async () => ({
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql.includes("legacy_mongo_id =")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 10, legacy_mongo_id: null }] };
+      if (sql.includes("FOR UPDATE")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 10, legacy_mongo_id: null }] };
+      if (sql.includes("INSERT INTO sales")) return { rows: [{ id: "sale-a", product_id: "product-a", sale_date: new Date("2026-01-02"), quantity: 2 }] };
+      if (sql.includes("UPDATE products")) return { rows: [{ stock_quantity: 8 }] };
+      if (sql.includes("inventory_movements")) return { rows: [] };
+      return { rows: [] };
+    },
+    release() {},
+  });
 
   try {
     await getSalesHistory("tenant-a", {
@@ -217,6 +232,59 @@ test("sales history and inserts remain tenant-scoped", async () => {
     assert.ok(dataCalls.every(({ sql, params }) => sql.includes("tenant_id") && params.includes("tenant-a")));
   } finally {
     pool.query = originalQuery;
+    pool.connect = originalConnect;
+  }
+});
+
+test("stock initialization writes balance and ledger atomically for the trusted tenant", async () => {
+  const originalConnect = pool.connect;
+  const calls = [];
+  pool.connect = async () => ({
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql.includes("legacy_mongo_id =")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 0, legacy_mongo_id: null }] };
+      if (sql.includes("FOR UPDATE")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 0, legacy_mongo_id: null }] };
+      if (sql.includes("COUNT(*)")) return { rows: [{ count: 0 }] };
+      if (sql.includes("UPDATE products")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 12 }] };
+      if (sql.includes("INSERT INTO inventory_movements")) return { rows: [{ id: "movement-a", movement_type: "INITIAL", quantity: 12 }] };
+      return { rows: [] };
+    },
+    release() {},
+  });
+  try {
+    const result = await adjustProductStock("tenant-a", "product-a", { mode: "set", quantity: 12, reason: "opening count" });
+    assert.equal(result.movement.movement_type, "INITIAL");
+    assert.ok(calls.some(({ sql, params }) => sql.includes("UPDATE products") && params.includes("tenant-a")));
+    assert.ok(calls.some(({ sql, params }) => sql.includes("INSERT INTO inventory_movements") && params.includes("tenant-a")));
+    assert.ok(calls.some(({ sql }) => sql.includes("FOR UPDATE")));
+    assert.equal(calls.at(-1).sql, "COMMIT");
+  } finally {
+    pool.connect = originalConnect;
+  }
+});
+
+test("stock adjustments fail without a partial write when the balance would go negative", async () => {
+  const originalConnect = pool.connect;
+  const calls = [];
+  pool.connect = async () => ({
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql.includes("legacy_mongo_id =")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 2, legacy_mongo_id: null }] };
+      if (sql.includes("FOR UPDATE")) return { rows: [{ id: "product-a", name: "Almonds", category: "Food", stock_quantity: 2, legacy_mongo_id: null }] };
+      if (sql.includes("COUNT(*)")) return { rows: [{ count: 1 }] };
+      return { rows: [] };
+    },
+    release() {},
+  });
+  try {
+    const result = await adjustProductStock("tenant-a", "product-a", { mode: "adjust", quantity: -3, reason: "correction" });
+    assert.equal(result.insufficientStock, true);
+    assert.ok(calls.some(({ sql }) => sql === "ROLLBACK"));
+    assert.ok(!calls.some(({ sql }) => sql.includes("INSERT INTO inventory_movements")));
+  } finally {
+    pool.connect = originalConnect;
   }
 });
 

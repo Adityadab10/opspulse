@@ -17,6 +17,7 @@ const migrationFiles = [
   "003_ai_analyst_rag.sql",
   "004_agent_runs_and_steps.sql",
   "005_tenant_isolation.sql",
+  "006_inventory_foundation.sql",
 ];
 
 const isLocalTestDatabase = (value) => {
@@ -194,6 +195,7 @@ let db;
 let controllers;
 let createProduct;
 let insertSale;
+let adjustProductStock;
 let upsertPrediction;
 let createAlert;
 let deactivateAlertById;
@@ -214,6 +216,7 @@ let apiBaseUrl;
 
 const seedTenant = async (tenantId, label, demand) => {
   const product = await createProduct(tenantId, `${label} Product`, "Grocery");
+  await adjustProductStock(tenantId, product.id, { mode: "set", quantity: 100, reason: "integration fixture" });
   const sale = await insertSale(tenantId, product.id, new Date("2026-01-01T00:00:00.000Z"), 10);
   const predictionRow = await upsertPrediction(tenantId, product.id, prediction(demand));
   const alert = await createAlert(tenantId, product.id, {
@@ -256,6 +259,7 @@ if (!testDatabaseUrl) {
     ({
       createProduct,
       insertSale,
+      adjustProductStock,
       upsertPrediction,
       createAlert,
       deactivateAlertById,

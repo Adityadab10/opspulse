@@ -8,6 +8,7 @@ import {
   updateProduct,
 } from "../controllers/productController.js";
 import { getProductIntelligence } from "../controllers/productIntelligenceController.js";
+import { adjustStock, getStockMovements } from "../controllers/inventoryController.js";
 import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
 import { requireTenantContext } from "../middleware/tenantContext.js";
 
@@ -21,6 +22,8 @@ export const createProductRouter = ({
 
   router.get("/analysis", getProductAnalysis); // 🔥 FIRST
   router.get("/analysis/:productId", getProductIntelligence);
+  router.post("/:productId/stock", adjustStock);
+  router.get("/:productId/stock/movements", getStockMovements);
   router.get("/:productId", getProduct);
   router.patch("/:productId", updateProduct);
   router.delete("/:productId", deleteProduct);

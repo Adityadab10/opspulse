@@ -54,6 +54,9 @@ export const addSales = async (req, res) => {
     if (!result) {
       return res.status(404).json({ message: "Product not found" });
     }
+    if (result.insufficientStock) {
+      return res.status(409).json({ message: "Insufficient stock for this sale", availableStock: result.availableStock });
+    }
     if (!result.sale) {
       return res.status(409).json({ message: "Sale could not be recorded because the transaction is no longer available" });
     }

@@ -6,6 +6,13 @@ export const sendBackendError = (res, message, error) => {
     });
   }
 
+  if (error?.code === "INVENTORY_SCHEMA_UNAVAILABLE" || error?.code === "42P01" || error?.code === "42703") {
+    return res.status(503).json({
+      message: "Inventory schema is unavailable",
+      error: "Migration 006 must be applied before inventory-aware operations are enabled",
+    });
+  }
+
   if (error?.code === "MISSING_TENANT_CONTEXT") {
     return res.status(401).json({ message: "Trusted tenant context is required" });
   }

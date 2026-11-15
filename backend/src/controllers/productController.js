@@ -16,6 +16,7 @@ const toProductResponse = (product) => ({
   id: product.id,
   name: product.name,
   category: product.category,
+  stockQuantity: product.stock_quantity === undefined ? null : Number(product.stock_quantity),
   legacy_mongo_id: product.legacy_mongo_id,
   createdAt: product.created_at,
   updatedAt: product.updated_at,
@@ -112,6 +113,7 @@ export const deleteProduct = async (req, res) => {
       sales: Number(dependencyState.sales_count),
       predictions: Number(dependencyState.predictions_count),
       alerts: Number(dependencyState.alerts_count),
+      inventoryMovements: Number(dependencyState.inventory_movements_count),
     };
     if (Object.values(dependencies).some((count) => count > 0)) {
       return res.status(409).json({
