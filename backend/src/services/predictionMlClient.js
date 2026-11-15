@@ -9,6 +9,8 @@ const getPredictionConfig = () => ({
   comparisonUrl: process.env.ML_COMPARE_URL || "http://localhost:5002/compare-models",
   timeoutMs: Number(process.env.ML_TIMEOUT_MS || 10000),
   comparisonTimeoutMs: Number(process.env.ML_COMPARE_TIMEOUT_MS || 30000),
+  forecastUrl: process.env.ML_FORECAST_URL || "http://localhost:5002/forecast",
+  forecastTimeoutMs: Number(process.env.ML_FORECAST_TIMEOUT_MS || 60000),
   internalToken: getMlAnalystConfig().internalToken,
 });
 
@@ -39,5 +41,15 @@ export const requestMlComparison = (productId) => {
     url: config.comparisonUrl,
     timeoutMs: config.comparisonTimeoutMs,
     productId,
+  });
+};
+
+export const requestMlForecast = ({ productId, horizon, model }) => {
+  const config = getPredictionConfig();
+  return requestMlService({
+    url: config.forecastUrl,
+    timeoutMs: config.forecastTimeoutMs,
+    internalToken: config.internalToken,
+    body: { productId: String(productId), horizon, model },
   });
 };

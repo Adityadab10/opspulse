@@ -48,6 +48,12 @@ except Exception as exc:  # Keep the endpoint's existing 503 behavior.
     compare_arima_prophet = None
 
 try:
+    from forecastService import forecast_product
+except Exception as exc:
+    print("[error] Error importing forecastService:", str(exc))
+    forecast_product = None
+
+try:
     from postgresService import get_db_diagnostics, get_raw_sales_data
 except Exception as exc:  # Keep the endpoint's existing 503 behavior.
     print("[error] Error importing postgresService:", str(exc))
@@ -78,6 +84,14 @@ class ProductRequest(BaseModel):
 
     productId: Any = None
     newsText: str = ""
+
+
+class ForecastRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    productId: Any = None
+    horizon: int = 30
+    model: str = "auto"
 
 
 class NewsInsightsRequest(BaseModel):
@@ -173,7 +187,7 @@ def _safe_call(func, *args, **kwargs):
             return func(*args)
 
 
-async def _parse_json_body(request: Request):
+async def _parse_json_body(request: Request, schema=ProductRequest):
     try:
         payload = await request.json()
     except Exception:
@@ -182,7 +196,7 @@ async def _parse_json_body(request: Request):
     if not isinstance(payload, dict):
         return None
 
-    return ProductRequest.model_validate(payload)
+    return schema.model_validate(payload)
 
 
 async def _parse_news_body(request: Request):
@@ -286,6 +300,36 @@ async def predict(
     except Exception as exc:
         print("Exception:", str(exc))
         return _json_response({"error": "Prediction failed"}, 500)
+
+
+@app.post("/forecast")
+async def forecast(
+    request: Request,
+    context: TrustedContext = Depends(require_trusted_context),
+):
+    if forecast_product is None:
+        return _json_response({"error": "Forecast service not available"}, 503)
+    try:
+        payload = await _parse_json_body(request, ForecastRequest)
+    except ValidationError as exc:
+        return _json_response({"error": f"Invalid request payload: {exc.errors()}"}, 400)
+    if payload is None or payload.productId is None:
+        return _json_response({"error": "productId is required"}, 400)
+    try:
+        result = await run_in_threadpool(
+            forecast_product,
+            str(payload.productId),
+            payload.horizon,
+            payload.model,
+            context.tenant_id,
+        )
+        if not result.get("success", False):
+            return _json_response(result, 422)
+        return _json_response(result)
+    except ValueError as exc:
+        return _json_response({"error": str(exc)}, 400)
+    except Exception:
+        return _json_response({"error": "Forecast failed"}, 500)
 
 
 @app.post("/compare-models")

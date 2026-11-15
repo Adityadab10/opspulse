@@ -76,6 +76,40 @@ def test_compare_models_maps_insufficient_data_to_400(monkeypatch):
     assert "Not enough data" in response.json()["error"]
 
 
+def test_forecast_requires_product_id(monkeypatch):
+    monkeypatch.setattr(app, "forecast_product", lambda *_args, **_kwargs: {})
+    response = client.post("/forecast", json={})
+    assert response.status_code == 400
+    assert response.json() == {"error": "productId is required"}
+
+
+def test_forecast_returns_model_horizon_and_series(monkeypatch):
+    monkeypatch.setattr(app, "forecast_product", lambda *args, **kwargs: {
+        "success": True,
+        "selectedModel": "arima",
+        "horizon": 7,
+        "historical": [{"date": "2026-01-01", "quantity": 4}],
+        "forecast": [{"date": "2026-01-02", "value": 5.0}],
+        "historicalPoints": 5,
+        "generatedAt": "2026-01-01T00:00:00Z",
+    })
+    response = client.post("/forecast", json={"productId": "product-1", "horizon": 7, "model": "auto"})
+    assert response.status_code == 200
+    assert response.json()["selectedModel"] == "arima"
+    assert response.json()["horizon"] == 7
+
+
+def test_forecast_maps_insufficient_data_to_422(monkeypatch):
+    monkeypatch.setattr(app, "forecast_product", lambda *_args, **_kwargs: {
+        "success": False,
+        "error": "INSUFFICIENT_DATA",
+        "message": "At least 5 daily sales observations are required",
+    })
+    response = client.post("/forecast", json={"productId": "product-1", "horizon": 30})
+    assert response.status_code == 422
+    assert response.json()["error"] == "INSUFFICIENT_DATA"
+
+
 def test_predict_maps_model_errors_to_500(monkeypatch):
     monkeypatch.setattr(app, "predict_demand", lambda *_args, **_kwargs: 1 / 0)
 

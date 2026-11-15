@@ -79,6 +79,10 @@ export const salesApi = {
   create: (sale) => api.post("/sales", sale),
 };
 
+export const forecastApi = {
+  getProductForecast: (productId, params = {}) => api.get(`/forecast/${encodeURIComponent(productId)}`, { params }),
+};
+
 export const predictionApi = {
   getPredictions: (params = {}) => api.get("/predictions", { params }),
   runPrediction: (productId, params = {}) =>

@@ -5,6 +5,7 @@ import cors from "cors";
 import pool from "./config/database.js";
 import productRoutes from "./routes/productRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
+import forecastRoutes from "./routes/forecastRoutes.js";
 import dashboardRoutes from "./routes/dashboardRoutes.js";
 import alertRoutes from "./routes/alertRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
@@ -33,6 +34,7 @@ app.get("/", (req, res) => {
 app.use("/api/products", productRoutes);
 app.use("/api/products/analysis",productRoutes);
 app.use("/api/sales", salesRoutes);
+app.use("/api/forecast", forecastRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/upload", uploadRoutes);
