@@ -14,6 +14,7 @@ import Forecasting from "./pages/Forecasting";
 import InventoryIntelligence from "./pages/InventoryIntelligence";
 import InventoryAgent from "./pages/InventoryAgent";
 import AiAnalyst from "./pages/AiAnalyst";
+import AppHeader from "./components/AppHeader";
 
 function StatusBanner() {
   const { apiError, clearApiError } = useAuth();
@@ -88,6 +89,7 @@ function ProtectedRoute({ children }) {
     <>
       <StatusBanner />
       <TenantSwitcher />
+      <AppHeader />
       {children}
     </>
   );
