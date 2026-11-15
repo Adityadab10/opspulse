@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   BrainCircuit,
@@ -12,6 +12,7 @@ import {
 import Sidebar from "../components/Sidebar";
 import KPIcard from "../components/KPIcard";
 import LineChart from "../components/LineChart";
+import SalesTrendChart from "../components/SalesTrendChart";
 import DonutChart from "../components/DonutChart";
 import ProductTable from "../components/ProductTable";
 import NewsPanel from "../components/NewsPanel";
@@ -21,6 +22,16 @@ import ForecastComparisonChart from "../components/ForecastComparisonChart";
 import AiAnalystPanel from "../components/AiAnalystPanel";
 import { alertsApi, comparisonApi, dashboardApi, newsApi, predictionApi, productsApi } from "../services/api";
 import { getSafeApiErrorLog, getSafeApiErrorMessage, isStaleTenantContextError } from "../services/authSupport";
+import { useAuth } from "../auth/authContextValue";
+
+const toDateInputValue = (date) => date.toISOString().slice(0, 10);
+
+const getInitialDateRange = () => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setUTCMonth(start.getUTCMonth() - 5, 1);
+  return { start: toDateInputValue(start), end: toDateInputValue(end) };
+};
 
 const mergeAnalysisWithProducts = (analysisRows, products) => {
   const bucket = new Map();
@@ -252,6 +263,7 @@ const formatReasonSummary = (reason) => {
 };
 
 export default function Dashboard() {
+  const { selectedTenantId } = useAuth();
   const [summary, setSummary] = useState({
     totalProducts: 0,
     avgMonthlySales: 0,
@@ -286,14 +298,23 @@ export default function Dashboard() {
   const [selectedNewsProductId, setSelectedNewsProductId] = useState("");
   const [productIntelligence, setProductIntelligence] = useState(null);
   const [selectedProductId, setSelectedProductId] = useState("");
+  const [dateRange, setDateRange] = useState(getInitialDateRange);
+  const [monthlySales, setMonthlySales] = useState([]);
+  const dashboardRequestRef = useRef(0);
+  const lastLoadedRangeRef = useRef(null);
+  const dateRangeRef = useRef(dateRange);
+  dateRangeRef.current = dateRange;
 
-  const loadDashboard = useCallback(async () => {
+  const loadDashboard = useCallback(async (range) => {
+    const requestId = dashboardRequestRef.current + 1;
+    dashboardRequestRef.current = requestId;
     try {
       setSummaryLoading(true);
       setDashboardError("");
 
-      const [summaryRes, analysisRes, alertsRes, productsRes] = await Promise.all([
-        dashboardApi.getSummary(),
+      const [summaryRes, trendsRes, analysisRes, alertsRes, productsRes] = await Promise.all([
+        dashboardApi.getSummary(range),
+        dashboardApi.getTrends(range),
         productsApi.getAnalysis(),
         alertsApi.getAlerts(),
         productsApi.getAll(),
@@ -303,7 +324,9 @@ export default function Dashboard() {
       const products = Array.isArray(productsRes?.data) ? productsRes.data : [];
       const mergedAnalysis = mergeAnalysisWithProducts(analysisRows, products);
 
+      if (requestId !== dashboardRequestRef.current) return;
       setSummary(summaryRes?.data || {});
+      setMonthlySales(Array.isArray(trendsRes?.data?.monthlySales) ? trendsRes.data.monthlySales : []);
       setAnalysis(mergedAnalysis);
       setSelectedNewsProductId((prev) => {
         if (prev && mergedAnalysis.some((item) => String(item?.productId || "") === String(prev))) {
@@ -315,12 +338,12 @@ export default function Dashboard() {
       });
       setAlerts(Array.isArray(alertsRes?.data) ? alertsRes.data : []);
     } catch (err) {
-      if (!isStaleTenantContextError(err)) {
+      if (requestId === dashboardRequestRef.current && !isStaleTenantContextError(err)) {
         console.error("Dashboard fetch error:", getSafeApiErrorLog(err));
         setDashboardError(getSafeApiErrorMessage(err, "Failed to load dashboard summary data."));
       }
     } finally {
-      setSummaryLoading(false);
+      if (requestId === dashboardRequestRef.current) setSummaryLoading(false);
     }
   }, []);
 
@@ -367,18 +390,45 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    const selectedDateRange = dateRangeRef.current;
+    dashboardRequestRef.current += 1;
+    setSummary({ totalProducts: 0, totalSalesVolume: 0, transactionCount: 0, activeAlerts: 0 });
+    setMonthlySales([]);
+    setAnalysis([]);
+    setAlerts([]);
+    setPredictions([]);
+    setComparisonData([]);
+    setSelectedNewsProductId("");
+    setSelectedProductId("");
+    setProductIntelligence(null);
+    setNewsPanelData(null);
+    setNewsPanelProduct(null);
+    setNewsPanelOpen(false);
+    lastLoadedRangeRef.current = `${selectedDateRange.start}:${selectedDateRange.end}`;
+
+    let active = true;
     const bootstrap = async () => {
       setLoading(true);
       await Promise.all([
-        loadDashboard(),
-        loadPredictions({ forceRefresh: true }),
+        loadDashboard(selectedDateRange),
+        loadPredictions(),
         loadComparisons(),
       ]);
-      setLoading(false);
+      if (active) setLoading(false);
     };
 
     bootstrap();
-  }, [loadDashboard, loadPredictions, loadComparisons]);
+    return () => {
+      active = false;
+    };
+  }, [selectedTenantId, loadDashboard, loadPredictions, loadComparisons]);
+
+  useEffect(() => {
+    const rangeKey = `${dateRange.start}:${dateRange.end}`;
+    if (lastLoadedRangeRef.current === rangeKey) return;
+    lastLoadedRangeRef.current = rangeKey;
+    loadDashboard(dateRange);
+  }, [dateRange, loadDashboard]);
 
   useEffect(() => {
     if (!comparisonModalOpen) {
@@ -638,8 +688,38 @@ export default function Dashboard() {
             Dashboard
           </h1>
           <p className="mt-2 text-slate-400">
-            Welcome back! Here's what's happening with your inventory today.
+            Review recorded sales, product activity, alerts, and demand forecasts.
           </p>
+
+          <div className="mt-4 flex flex-wrap items-end gap-3 rounded-xl border border-slate-500/20 bg-slate-900/40 p-3">
+            <label className="text-xs text-slate-300">
+              <span className="mb-1 block font-semibold uppercase tracking-wide text-slate-400">From</span>
+              <input
+                type="date"
+                value={dateRange.start}
+                max={dateRange.end || undefined}
+                onChange={(event) => setDateRange((current) => ({ ...current, start: event.target.value }))}
+                className="rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <label className="text-xs text-slate-300">
+              <span className="mb-1 block font-semibold uppercase tracking-wide text-slate-400">To</span>
+              <input
+                type="date"
+                value={dateRange.end}
+                min={dateRange.start || undefined}
+                onChange={(event) => setDateRange((current) => ({ ...current, end: event.target.value }))}
+                className="rounded-lg border border-slate-500/30 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => setDateRange(getInitialDateRange())}
+              className="rounded-lg border border-slate-500/30 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
+            >
+              Last 6 months
+            </button>
+          </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
@@ -678,7 +758,7 @@ export default function Dashboard() {
               <span>{dashboardError}</span>
               <button
                 type="button"
-                onClick={loadDashboard}
+                onClick={() => loadDashboard(dateRange)}
                 disabled={summaryLoading}
                 className="inline-flex items-center gap-1 rounded-lg border border-red-300/40 bg-red-300/10 px-3 py-1.5 text-xs font-semibold text-red-100 transition hover:bg-red-300/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
@@ -706,12 +786,25 @@ export default function Dashboard() {
         {/* KPI Cards */}
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <KPIcard title="Total Products" value={summary.totalProducts ?? 0} />
-          <KPIcard title="Avg Monthly Sales" value={summary.avgMonthlySales ?? 0} />
+          <KPIcard title="Units Sold" value={summary.totalSalesVolume ?? 0} />
+          <KPIcard title="Sales Records" value={summary.transactionCount ?? 0} />
           <KPIcard title="Active Alerts" value={summary.activeAlerts ?? 0} />
-          <KPIcard title="Recommendations Ready" value={summary.recommendationsReady ?? 0} />
         </section>
 
-        <AiAnalystPanel />
+        <section className="glass rounded-2xl p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold text-white">Sales trend</h2>
+              <p className="mt-1 text-sm text-slate-400">Monthly units sold for the selected date range.</p>
+            </div>
+            <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-100">
+              Revenue unavailable: transaction prices are not recorded.
+            </div>
+          </div>
+          <SalesTrendChart data={monthlySales} />
+        </section>
+
+        <AiAnalystPanel key={selectedTenantId || "no-tenant"} />
 
         <section id="news-insights" className="glass rounded-2xl p-6 transition-all hover:border-cyan-500/40">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

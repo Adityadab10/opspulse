@@ -7,13 +7,20 @@ import {
   getProductById,
 } from "../config/postgres.js";
 import { sendBackendError } from "../helpers/errorResponse.js";
+import {
+  DashboardDateRangeError,
+  buildMonthlySalesSeries,
+  filterSalesByDateRange,
+  getDashboardDateRange,
+  summarizeSales,
+} from "../services/dashboardMetrics.js";
 
-const computeTrend = (salesDocs, recentDays = 30) => {
+const computeTrend = (salesDocs, recentDays = 30, endDate = new Date()) => {
   if (!salesDocs || salesDocs.length === 0) {
     return { recentSales: 0, previousSales: 0, percentChange: 0, trendDirection: "stable" };
   }
 
-  const now = new Date();
+  const now = endDate;
   const cutoffDate = new Date(now);
   cutoffDate.setDate(cutoffDate.getDate() - recentDays);
 
@@ -49,23 +56,28 @@ const computeTrend = (salesDocs, recentDays = 30) => {
 const getSummary = async (req, res) => {
   try {
     const tenantId = req.authContext.tenantId;
+    const dateRange = getDashboardDateRange(req.query);
     const [totalProductsResult, activeAlertsResult, allSales] = await Promise.all([
       countProducts(tenantId),
       countAllActiveAlerts(tenantId),
       getAllSales(tenantId),
     ]);
 
+    const filteredSales = filterSalesByDateRange(allSales, dateRange);
+    const { totalSalesVolume, transactionCount } = summarizeSales(filteredSales);
     const totalProducts = totalProductsResult;
     const activeAlerts = activeAlertsResult;
-    const totalSalesVolume = allSales.reduce((sum, s) => sum + (s.quantity || 0), 0);
-    const avgDailySales = totalSalesVolume / 30 || 0;
+    const rangeDays = dateRange.startDate && dateRange.endDateExclusive
+      ? Math.max((dateRange.endDateExclusive - dateRange.startDate) / (24 * 60 * 60 * 1000), 1)
+      : null;
+    const avgDailySales = rangeDays ? totalSalesVolume / rangeDays : 0;
     const avgMonthlySales = totalProducts ? roundTo(totalSalesVolume / Math.max(totalProducts, 1)) : 0;
 
-    const trend = computeTrend(allSales);
+    const trend = computeTrend(filteredSales, 30, dateRange.endDateExclusive || new Date());
 
     // Group sales by product for top products calculation
     const productSalesMap = new Map();
-    for (const sale of allSales) {
+    for (const sale of filteredSales) {
       const key = sale.product_id;
       if (!productSalesMap.has(key)) {
         productSalesMap.set(key, { productId: key, totalQty: 0, sales: [] });
@@ -136,9 +148,13 @@ const getSummary = async (req, res) => {
 
     return res.status(200).json({
       totalProducts,
+      transactionCount,
       avgMonthlySales: totalProducts ? roundTo(totalSalesVolume / Math.max(totalProducts, 1)) : 0,
       avgDailySales: roundTo(avgDailySales),
       totalSalesVolume,
+      revenue: null,
+      revenueAvailable: false,
+      revenueUnavailableReason: "Sales records store quantities but not transaction prices.",
       activeAlerts,
       topIncreasingProducts,
       topDecreasingProducts,
@@ -149,8 +165,15 @@ const getSummary = async (req, res) => {
         percentChange: trend.percentChange,
         trendDirection: trend.trendDirection,
       },
+      dateRange: {
+        start: dateRange.start,
+        end: dateRange.end,
+      },
     });
   } catch (error) {
+    if (error instanceof DashboardDateRangeError) {
+      return res.status(400).json({ message: error.message });
+    }
     console.error("Dashboard summary error:", error?.code || error?.name || "unknown");
     return sendBackendError(res, "Failed to fetch dashboard summary", error);
   }
@@ -159,8 +182,9 @@ const getSummary = async (req, res) => {
 const getTrends = async (req, res) => {
   try {
     const tenantId = req.authContext.tenantId;
-    const now = new Date();
-    const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
+    const dateRange = getDashboardDateRange(req.query);
+    const now = dateRange.endDateExclusive || new Date();
+    const startDate = dateRange.startDate || new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
     const sixMonthKeys = Array.from({ length: 6 }, (_, i) => {
       const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
@@ -171,9 +195,9 @@ const getTrends = async (req, res) => {
     const allSales = await getAllSales(tenantId);
 
     // Filter sales within the 6-month window (UTC)
-    const filteredSales = allSales.filter((s) => {
-      const saleDate = new Date(s.sale_date);
-      return saleDate >= startDate && saleDate <= new Date();
+    const filteredSales = filterSalesByDateRange(allSales, {
+      startDate,
+      endDateExclusive: dateRange.endDateExclusive || new Date(now.getTime() + 1),
     });
 
     // Group sales by product and month
@@ -206,8 +230,7 @@ const getTrends = async (req, res) => {
       return { product: name, data };
     });
 
-    const totalQuantity = allSales.reduce((sum, sale) => sum + Number(sale.quantity || 0), 0);
-    const recordCount = allSales.length;
+    const { totalSalesVolume: totalQuantity, transactionCount: recordCount } = summarizeSales(filteredSales);
 
     const demandTrendSummary = {
       totalSales: totalQuantity,
@@ -217,9 +240,17 @@ const getTrends = async (req, res) => {
 
     return res.status(200).json({
       trends: response,
+      monthlySales: buildMonthlySalesSeries(filteredSales),
       demandTrendSummary,
+      dateRange: {
+        start: dateRange.start || startDate.toISOString().slice(0, 10),
+        end: dateRange.end || null,
+      },
     });
   } catch (error) {
+    if (error instanceof DashboardDateRangeError) {
+      return res.status(400).json({ message: error.message });
+    }
     console.error("Dashboard trends error:", error?.code || error?.name || "unknown");
     return sendBackendError(res, "Failed to fetch trends", error);
   }

@@ -59,8 +59,8 @@ api.interceptors.response.use(
 );
 
 export const dashboardApi = {
-  getSummary: () => api.get("/dashboard/summary"),
-  getTrends: () => api.get("/dashboard/trends"),
+  getSummary: (params = {}) => api.get("/dashboard/summary", { params }),
+  getTrends: (params = {}) => api.get("/dashboard/trends", { params }),
 };
 
 export const productsApi = {
