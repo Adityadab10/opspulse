@@ -4,12 +4,12 @@ import {
   predictByProduct,
   predictAllProducts,
 } from "../controllers/predictionController.js";
-import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireSessionMembership } from "../middleware/clerkAuth.js";
 import { requireTenantContext } from "../middleware/tenantContext.js";
 import { requireMlServiceToken } from "../middleware/mlServiceAuth.js";
 
 export const createPredictionRouter = ({
-  authMiddleware = requireFirebaseAuth,
+  authMiddleware = requireSessionMembership,
   tenantMiddleware = requireTenantContext,
   mlServiceMiddleware = requireMlServiceToken,
 } = {}) => {

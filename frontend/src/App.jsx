@@ -60,7 +60,7 @@ function TenantAccessState({ multiple = false }) {
     <div className="flex min-h-screen items-center justify-center bg-black px-6 text-white">
       <div className="w-full max-w-md rounded-2xl border border-amber-400/20 bg-slate-900/80 p-8">
         <h1 className="text-2xl font-bold text-amber-100">Tenant access is not configured</h1>
-        <p className="mt-2 text-slate-400">Your Firebase account has no tenant membership. Contact an administrator.</p>
+        <p className="mt-2 text-slate-400">Your account has no tenant membership. Contact an administrator.</p>
         <div className="mt-6 flex gap-4 text-sm">
           <button type="button" onClick={() => refreshClaims()} className="text-cyan-200 underline">Refresh membership</button>
           <button type="button" onClick={() => signOut()} className="text-slate-400 underline">Sign out</button>

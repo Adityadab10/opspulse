@@ -7,12 +7,14 @@ from functools import lru_cache
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from new_database import new_database_connection
+from security import current_context
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
+if not DATABASE_URL and not os.getenv("OPSPULSE_RUNTIME_DATABASE_URL"):
     raise ValueError("DATABASE_URL is not set in environment")
 
 TEST_LEGACY_ID = "test123"
@@ -39,8 +41,18 @@ def table_has_tenant_id(table_name: str) -> bool:
 
 @contextmanager
 def _connection():
-    connection = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+    if os.getenv("OPSPULSE_RUNTIME_DATABASE_URL") or os.getenv("ENVIRONMENT", "").lower() == "production":
+        dsn, options = new_database_connection("OPSPULSE_RUNTIME_DATABASE_URL")
+        connection = psycopg2.connect(dsn, options="-c search_path=public,extensions", **options)
+    else:
+        if "pcefxrhnzqlgpscnkypg" in (DATABASE_URL or ""):
+            raise RuntimeError("The archived database is unavailable to this application")
+        connection = psycopg2.connect(DATABASE_URL, connect_timeout=5)
     try:
+        context = current_context.get()
+        if context:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT set_config('app.current_tenant_id', %s, true)", (context.tenant_id,))
         yield connection
     finally:
         connection.close()
@@ -71,7 +83,15 @@ def _normalize_product_id(product_id):
     return normalized
 
 
+def require_runtime_tenant(tenant_id: str | None) -> None:
+    if os.getenv("OPSPULSE_RUNTIME_DATABASE_URL") or os.getenv("ENVIRONMENT", "").lower() == "production":
+        context = current_context.get()
+        if not context or not tenant_id or tenant_id != context.tenant_id:
+            raise PermissionError("Trusted tenant context is required")
+
+
 def resolve_product(product_id: str, tenant_id: str | None = None):
+    require_runtime_tenant(tenant_id)
     normalized = _normalize_product_id(product_id)
 
     if tenant_id:
@@ -113,6 +133,7 @@ def resolve_product(product_id: str, tenant_id: str | None = None):
 
 
 def get_db_diagnostics(tenant_id: str | None = None):
+    require_runtime_tenant(tenant_id)
     diagnostics = {
         "database": "postgresql",
         "database_configured": bool(DATABASE_URL),

@@ -12,3 +12,4 @@ lxml
 statsmodels
 langgraph>=1.2.0
 langgraph-checkpoint-postgres>=3.0.0
+sentence-transformers==6.3.0

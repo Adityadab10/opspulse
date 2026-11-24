@@ -70,17 +70,29 @@ export const buildAuthenticatedRequestConfig = async ({
     throw error;
   }
 
+  const tenantId = getTenantId();
+  const tenantContextVersion = getTenantContextVersion();
   const token = await user.getIdToken();
+  if (tenantContextVersion !== getTenantContextVersion()) {
+    const error = new Error("Tenant context changed before the request was sent");
+    error.code = "STALE_TENANT_CONTEXT";
+    throw error;
+  }
+  if (!token) {
+    const error = new Error("Authentication is required");
+    error.code = "AUTHENTICATION_REQUIRED";
+    throw error;
+  }
   return {
     ...config,
     metadata: {
       ...config.metadata,
-      tenantContextVersion: getTenantContextVersion(),
+      tenantContextVersion,
     },
     headers: createAuthorizationHeaders({
       headers: config.headers,
       token,
-      tenantId: getTenantId(),
+      tenantId,
     }),
   };
 };

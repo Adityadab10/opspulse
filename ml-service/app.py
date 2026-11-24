@@ -137,6 +137,15 @@ class InventoryAgentRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("OPSPULSE_RUNTIME_DATABASE_URL") or os.getenv("ENVIRONMENT", "").lower() == "production":
+        from postgresService import _cursor
+        with _cursor() as cursor:
+            cursor.execute("SELECT rolsuper OR rolbypassrls AS bypasses_rls FROM pg_roles WHERE rolname = current_user")
+            if cursor.fetchone()["bypasses_rls"]:
+                raise RuntimeError("PostgreSQL runtime role must enforce RLS")
+            cursor.execute("SELECT version FROM public.opspulse_schema_migrations WHERE version = %s", ("001_fresh_opspulse",))
+            if not cursor.fetchone():
+                raise RuntimeError("Fresh schema is not initialized")
     default_checkpointer_manager.initialize()
     yield
     default_checkpointer_manager.close()
@@ -231,14 +240,14 @@ def health():
 
 
 @app.get("/test")
-def test(request: Request):
+async def test(request: Request):
     """Sanitized status check in production; diagnostic database metrics in explicit debug mode."""
     if os.getenv("ENABLE_DEBUG_ENDPOINTS", "false").lower() != "true":
         return _json_response({"status": "ok", "service": "ml-service"})
 
-    context = require_trusted_context(request)
+    context = await require_trusted_context(request)
     diagnostics = (
-        get_db_diagnostics(tenant_id=context.tenant_id)
+        await run_in_threadpool(get_db_diagnostics, tenant_id=context.tenant_id)
         if get_db_diagnostics
         else {"error": "postgresService unavailable"}
     )

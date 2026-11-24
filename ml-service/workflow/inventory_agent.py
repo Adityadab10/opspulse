@@ -31,10 +31,10 @@ def prioritize(state: OpsPulseState) -> dict[str, Any]:
 
 def finalize(state: OpsPulseState) -> dict[str, Any]:
     recommendations, limitations = state.get("recommendations") or [], state.get("limitations") or []; answer = f"Inventory analysis found {len(recommendations)} prioritized finding(s)."
-    default_tracker.update_run_status(state["run_id"], "completed", answer, .9 if recommendations else .7, limitations, ["inventory_agent"], {"intent":"inventory_investigation","horizon_days":state.get("inventory_horizon_days",30)})
+    default_tracker.update_run_status(state["run_id"], "completed", answer, .9 if recommendations else .7, limitations, ["inventory_agent"], {"intent":"inventory_investigation","horizon_days":state.get("inventory_horizon_days",30)}, tenant_id=state["tenant_id"])
     return {"final_answer":answer,"status":"completed","selected_agents":["inventory_agent"],"approval_required":any(r.get("proposedAction") for r in recommendations)}
 
 def run_inventory_agent(tenant_id: str, user_id: str, horizon_days: int, inventory_health: dict[str, Any]) -> OpsPulseState:
     run_id=str(uuid.uuid4()); default_tracker.create_run(run_id,tenant_id,user_id,run_id,"Inventory analysis","on_demand")
     graph=StateGraph(OpsPulseState); graph.add_node("investigate",investigate); graph.add_node("prioritize",prioritize); graph.add_node("finalize",finalize); graph.add_edge(START,"investigate"); graph.add_edge("investigate","prioritize"); graph.add_edge("prioritize","finalize"); graph.add_edge("finalize",END)
-    return graph.compile(checkpointer=default_checkpointer_manager.get_saver()).invoke({"run_id":run_id,"thread_id":run_id,"tenant_id":tenant_id,"user_id":user_id,"question":"Inventory analysis","inventory_horizon_days":horizon_days,"inventory_health":inventory_health},{"configurable":{"thread_id":CheckpointerManager.namespace_thread_id(tenant_id,run_id)}})
+    return graph.compile(checkpointer=default_checkpointer_manager.get_saver()).invoke({"run_id":run_id,"thread_id":run_id,"tenant_id":tenant_id,"user_id":user_id,"question":"Inventory analysis","inventory_horizon_days":horizon_days,"inventory_health":inventory_health},{"configurable":{"thread_id":CheckpointerManager.namespace_thread_id(tenant_id,run_id,user_id)}})

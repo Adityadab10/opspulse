@@ -41,3 +41,6 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local certificate configuration
+.opspulse-local/

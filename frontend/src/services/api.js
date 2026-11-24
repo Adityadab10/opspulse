@@ -1,5 +1,4 @@
 import axios from "axios";
-import { auth } from "../../firebase.config";
 import {
   buildAuthenticatedRequestConfig,
   classifyApiError,
@@ -8,25 +7,30 @@ import {
 import { getSelectedTenantId, getTenantContextVersion } from "./tenantState";
 
 const api = axios.create({
-  baseURL: "http://localhost:5001/api",
+  baseURL: import.meta.env.VITE_API_URL || "http://localhost:5001/api",
   timeout: 15000,
 });
 
 let apiErrorHandler = null;
+let getSessionToken = async () => null;
+
+export const setSessionTokenProvider = (provider) => {
+  getSessionToken = provider || (async () => null);
+};
 
 export const setApiErrorHandler = (handler) => {
   apiErrorHandler = typeof handler === "function" ? handler : null;
 };
 
 export const createAuthRequestInterceptor = ({
-  getCurrentUser = () => auth?.currentUser,
+  getCurrentUser = () => ({ getIdToken: () => getSessionToken() }),
   getTenantId = getSelectedTenantId,
   getTenantVersion = getTenantContextVersion,
 } = {}) => async (config) => {
   return buildAuthenticatedRequestConfig({
     config,
     getCurrentUser,
-    getTenantId,
+    getTenantId: config.ignoreTenant ? () => null : getTenantId,
     getTenantContextVersion: getTenantVersion,
   });
 };

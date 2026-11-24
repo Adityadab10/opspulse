@@ -4,11 +4,11 @@ import {
   createAlert,
   deactivateAlert,
 } from "../controllers/alertController.js";
-import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireSessionMembership } from "../middleware/clerkAuth.js";
 import { requireTenantContext } from "../middleware/tenantContext.js";
 
 export const createAlertRouter = ({
-  authMiddleware = requireFirebaseAuth,
+  authMiddleware = requireSessionMembership,
   tenantMiddleware = requireTenantContext,
 } = {}) => {
   const router = express.Router();

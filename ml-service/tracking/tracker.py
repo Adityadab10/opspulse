@@ -106,7 +106,11 @@ class RunTracker:
         execution_plan: dict[str, Any] | None = None,
         error_message: str | None = None,
         duration_ms: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
+        tenant_id = tenant_id or (self._memory_runs.get(run_id) or {}).get("tenant_id")
+        if not tenant_id:
+            raise ValueError("Tenant context is required to update a run")
         db_status = str(status)
         if db_status == "insufficient_evidence":
             db_status = "partial"
@@ -126,7 +130,7 @@ class RunTracker:
                 error_message = %s,
                 completed_at = now(),
                 duration_ms = %s
-            WHERE id::text = %s
+            WHERE id::text = %s AND tenant_id = %s
         """
         try:
             self._db.query_one(
@@ -141,6 +145,7 @@ class RunTracker:
                     error_message,
                     duration_ms,
                     run_id,
+                    tenant_id,
                 ),
             )
             self._persistence_degraded = False
@@ -149,7 +154,7 @@ class RunTracker:
             self._last_persistence_error = str(exc)
             logger.warning("DB update agent_runs failed: %s", exc)
 
-        if run_id in self._memory_runs:
+        if (self._memory_runs.get(run_id) or {}).get("tenant_id") == tenant_id:
             run = self._memory_runs[run_id]
             run["status"] = status
             run["final_answer"] = final_answer
@@ -199,7 +204,7 @@ class RunTracker:
                 status, input_payload, output_payload, tool_calls,
                 error_message, duration_ms, started_at, completed_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, now(), now())
-            ON CONFLICT (run_id, step_number) DO UPDATE SET
+            ON CONFLICT (tenant_id, run_id, step_number) DO UPDATE SET
                 status = EXCLUDED.status,
                 output_payload = EXCLUDED.output_payload,
                 tool_calls = EXCLUDED.tool_calls,

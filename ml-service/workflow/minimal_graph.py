@@ -6,6 +6,8 @@ Uses typed OpsPulseState with pluggable checkpoint persistence and tenant namesp
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import time
@@ -16,7 +18,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from contracts.state import OpsPulseState
+from new_database import new_database_connection
+from contracts.state import AgentFinding, OpsPulseState
 from tools import default_registry
 from tracking.tracker import default_tracker
 
@@ -35,11 +38,22 @@ class CheckpointerManager:
 
     def initialize(self) -> None:
         """Initialize connection pool and PostgresSaver if checkpointer_type is postgres."""
+        production = os.getenv("ENVIRONMENT", "").lower() == "production"
+        if production and self._checkpointer_type != "postgres":
+            raise RuntimeError("Production requires the PostgreSQL checkpointer")
         if self._checkpointer_type != "postgres":
             logger.info("LangGraph checkpointer set to '%s'; skipping Postgres pool initialization.", self._checkpointer_type)
             return
 
-        if not self._database_url:
+        options = {}
+        database_url = self._database_url
+        provisioned = bool(os.getenv("OPSPULSE_CHECKPOINT_DATABASE_URL")) or production
+        if provisioned:
+            database_url, options = new_database_connection("OPSPULSE_CHECKPOINT_DATABASE_URL")
+            options["options"] = "-c search_path=opspulse_checkpoints"
+        if "pcefxrhnzqlgpscnkypg" in (database_url or ""):
+            raise RuntimeError("The archived database cannot store checkpoints")
+        if not database_url:
             if os.getenv("ENVIRONMENT", "").lower() == "production":
                 raise RuntimeError("LANGGRAPH_CHECKPOINTER=postgres requires DATABASE_URL to be set in production.")
             logger.warning("DATABASE_URL not set for postgres checkpointer; falling back to memory in dev.")
@@ -52,16 +66,20 @@ class CheckpointerManager:
 
             if self._pool is None:
                 self._pool = ConnectionPool(
-                    conninfo=self._database_url,
+                    conninfo=database_url,
                     min_size=1,
                     max_size=10,
                     open=True,
                     timeout=5.0,
-                    kwargs={"autocommit": True},
+                    kwargs={"autocommit": True, **options},
                 )
             saver = PostgresSaver(self._pool)
             if not self._initialized:
-                saver.setup()
+                if provisioned:
+                    with self._pool.connection() as connection:
+                        connection.execute("SELECT v FROM checkpoint_migrations LIMIT 1").fetchone()
+                else:
+                    saver.setup()
                 self._initialized = True
             self._saver = saver
             logger.info("PostgresSaver initialized successfully with pooled connection.")
@@ -72,8 +90,8 @@ class CheckpointerManager:
                 except Exception:
                     pass
                 self._pool = None
-            if os.getenv("ENVIRONMENT", "").lower() == "production":
-                raise RuntimeError(f"Failed to initialize PostgresSaver in production: {exc}") from exc
+            if provisioned:
+                raise RuntimeError("Failed to initialize the private PostgreSQL checkpointer") from exc
             logger.warning("PostgresSaver initialization failed (%s); falling back to MemorySaver in dev.", exc)
             self._saver = None
             self._checkpointer_type = "memory"
@@ -99,12 +117,10 @@ class CheckpointerManager:
             self._initialized = False
 
     @staticmethod
-    def namespace_thread_id(tenant_id: str, thread_id: str) -> str:
-        """Namespace thread_id to prevent cross-tenant checkpoint collisions and unauthorized access."""
-        prefix = f"{tenant_id}:"
-        if thread_id.startswith(prefix):
-            return thread_id
-        return f"{prefix}{thread_id}"
+    def namespace_thread_id(tenant_id: str, thread_id: str, user_id: str = "") -> str:
+        """Derive an opaque key from trusted identity and an untrusted thread reference."""
+        digest = hashlib.sha256(json.dumps([tenant_id, user_id, thread_id]).encode()).hexdigest()
+        return f"{tenant_id}:{digest}"
 
 
 default_checkpointer_manager = CheckpointerManager()
@@ -114,8 +130,10 @@ def initialize_node(state: OpsPulseState) -> dict[str, Any]:
     """Initialize workflow state, budget, and tracking record."""
     run_id = state.get("run_id") or str(uuid.uuid4())
     thread_id = state.get("thread_id") or run_id
-    tenant_id = state.get("tenant_id") or "default"
-    user_id = state.get("user_id") or "system"
+    tenant_id = state.get("tenant_id")
+    user_id = state.get("user_id")
+    if not tenant_id or not user_id:
+        raise ValueError("Trusted tenant and user are required")
     question = state.get("question") or ""
 
     # Plan initial routing based on question terms
@@ -137,7 +155,16 @@ def initialize_node(state: OpsPulseState) -> dict[str, Any]:
         selected_agent = "business_analyst"
         tool_input = {}
 
+    tasks = [{"agent": selected_agent, "tool": selected_tool, "input": tool_input}]
+    mentions_demand = any(term in lowered for term in ("sale", "revenue", "demand", "volume"))
+    mentions_inventory = any(term in lowered for term in ("inventory", "stock", "risk", "reorder"))
+    if mentions_demand and mentions_inventory:
+        if selected_agent != "business_analyst":
+            tasks.append({"agent": "business_analyst", "tool": "get_sales_summary", "input": {}})
+        if selected_agent != "inventory_agent":
+            tasks.append({"agent": "inventory_agent", "tool": "get_inventory_risk", "input": {}})
     plan = {
+        "tasks": tasks,
         "intent": "analytics_investigation",
         "selected_tool": selected_tool,
         "selected_agent": selected_agent,
@@ -162,8 +189,8 @@ def initialize_node(state: OpsPulseState) -> dict[str, Any]:
         "status": "running",
         "intent": "analytics_investigation",
         "execution_plan": plan,
-        "selected_agents": [selected_agent],
-        "agent_status": {selected_agent: "running"},
+        "selected_agents": [task["agent"] for task in tasks],
+        "agent_status": {task["agent"]: "running" for task in tasks},
         "execution_budget": {"max_tool_calls": 5, "calls_made": 0},
         "tool_execution_log": [],
         "sql_evidence": [],
@@ -173,62 +200,52 @@ def initialize_node(state: OpsPulseState) -> dict[str, Any]:
 
 
 def execute_tool_node(state: OpsPulseState) -> dict[str, Any]:
-    """Execute planned analytics tool with permission check and tenant scoping."""
+    """Execute the supervisor plan through the tenant-aware typed registry."""
     plan = state.get("execution_plan") or {}
-    tool_name = plan.get("selected_tool", "get_business_kpis")
-    agent_name = plan.get("selected_agent", "supervisor")
-    tool_input = plan.get("tool_input", {})
-    tenant_id = state.get("tenant_id", "default")
-    run_id = state.get("run_id", "unknown")
-
-    started = time.perf_counter()
-    tool_result = default_registry.execute(
-        tool_name=tool_name,
-        agent_name=agent_name,
-        tenant_id=tenant_id,
-        raw_input=tool_input,
-        correlation_id=run_id,
-    )
-    duration_ms = int((time.perf_counter() - started) * 1000)
-
-    # Collect evidence references
-    evidence_dicts = [e.model_dump(mode="json") for e in tool_result.evidence]
-    tool_log_entry = {
-        "tool_name": tool_name,
-        "agent_name": agent_name,
-        "success": tool_result.success,
-        "duration_ms": duration_ms,
-        "limitations": tool_result.limitations,
-    }
-
-    # Record step in tracker
-    default_tracker.record_step(
-        run_id=run_id,
-        tenant_id=tenant_id,
-        step_number=1,
-        agent_name=agent_name,
-        node_name="execute_tool",
-        status="completed" if tool_result.success else "failed",
-        input_payload=tool_input,
-        output_payload=tool_result.data,
-        tool_calls=[tool_log_entry],
-        duration_ms=duration_ms,
-    )
-
-    existing_sql = list(state.get("sql_evidence") or [])
-    existing_sql.extend(evidence_dicts)
-
-    existing_logs = list(state.get("tool_execution_log") or [])
-    existing_logs.append(tool_log_entry)
-
+    tasks = plan.get("tasks") or [{
+        "tool": plan.get("selected_tool", "get_business_kpis"),
+        "agent": plan.get("selected_agent", "supervisor"),
+        "input": plan.get("tool_input", {}),
+    }]
+    tenant_id = state["tenant_id"]
+    run_id = state["run_id"]
+    budget = dict(state.get("execution_budget") or {"max_tool_calls": 5, "calls_made": 0})
+    evidence, logs, findings, errors = [], [], [], []
     agent_status = dict(state.get("agent_status") or {})
-    agent_status[agent_name] = "completed" if tool_result.success else "failed"
-
+    for step, task in enumerate(tasks[:budget["max_tool_calls"]], 1):
+        tool, agent, payload = task["tool"], task["agent"], task["input"]
+        started = time.perf_counter()
+        result = default_registry.execute(
+            tool_name=tool, agent_name=agent, tenant_id=tenant_id,
+            raw_input=payload, correlation_id=run_id,
+        )
+        duration = int((time.perf_counter() - started) * 1000)
+        status = "completed" if result.success else "failed"
+        refs = result.evidence if result.success else []
+        entry = {
+            "tool_name": tool, "agent_name": agent, "success": result.success,
+            "duration_ms": duration, "limitations": result.limitations,
+        }
+        findings.append(AgentFinding(
+            agent_name=agent, status=status,
+            summary=f"{tool} returned {len(refs)} evidence references",
+            findings=[result.data] if result.success and isinstance(result.data, dict) else [],
+            evidence=refs, limitations=result.limitations,
+        ).model_dump(mode="json"))
+        default_tracker.record_step(
+            run_id=run_id, tenant_id=tenant_id, step_number=step, agent_name=agent,
+            node_name="execute_tool", status=status, input_payload=payload,
+            output_payload=result.data, tool_calls=[entry], duration_ms=duration,
+        )
+        evidence.extend(ref.model_dump(mode="json") for ref in refs)
+        logs.append(entry)
+        agent_status[agent] = status
+        if not result.success:
+            errors.extend(result.limitations)
+    budget["calls_made"] += len(logs)
     return {
-        "sql_evidence": existing_sql,
-        "tool_execution_log": existing_logs,
-        "agent_status": agent_status,
-        "validation_errors": tool_result.limitations if not tool_result.success else [],
+        "sql_evidence": evidence, "tool_execution_log": logs, "agent_status": agent_status,
+        "agent_findings": findings, "validation_errors": errors, "execution_budget": budget,
     }
 
 
@@ -250,12 +267,13 @@ def synthesize_evidence_node(state: OpsPulseState) -> dict[str, Any]:
 
     # Deterministic synthesis
     if evidence_valid:
-        primary = sql_evidence[0]
+        evidence_text = " ".join(
+            f"{item.get('source_name')} ({item.get('source_type')}): {item.get('payload', {})}."
+            for item in sql_evidence
+        )
         final_answer = (
             f"Analysis complete for question: '{question}'. "
-            f"Grounded evidence retrieved from {primary.get('source_name')} "
-            f"via query {primary.get('query_name', 'analytics')}. "
-            f"Observed data: {primary.get('payload', {})}."
+            f"Evidence: {evidence_text}"
         )
     else:
         final_answer = (
@@ -272,6 +290,7 @@ def synthesize_evidence_node(state: OpsPulseState) -> dict[str, Any]:
     default_tracker.update_run_status(
         run_id=run_id,
         status=final_status,
+        tenant_id=tenant_id,
         final_answer=final_answer,
         confidence=confidence,
         limitations=limitations,
@@ -318,7 +337,7 @@ def run_minimal_pipeline(
     app = build_minimal_graph(checkpointer=checkpointer)
     actual_run_id = run_id or str(uuid.uuid4())
     actual_thread_id = thread_id or actual_run_id
-    namespaced_thread = CheckpointerManager.namespace_thread_id(tenant_id, actual_thread_id)
+    namespaced_thread = CheckpointerManager.namespace_thread_id(tenant_id, actual_thread_id, user_id)
 
     initial_state: OpsPulseState = {
         "run_id": actual_run_id,

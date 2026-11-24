@@ -1,5 +1,4 @@
 import threading
-import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -120,35 +119,32 @@ def test_predict_maps_model_errors_to_500(monkeypatch):
 
 
 def test_blocking_comparison_does_not_block_lightweight_route(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
     started = threading.Event()
+    release = threading.Event()
 
     def blocking_comparison(_):
         started.set()
-        time.sleep(0.15)
+        assert release.wait(timeout=10)
         return {}
 
     monkeypatch.setattr(app, "compare_arima_prophet", blocking_comparison)
+    monkeypatch.delenv("OPSPULSE_RUNTIME_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setattr(app.default_checkpointer_manager, "initialize", lambda: None)
+    monkeypatch.setattr(app.default_checkpointer_manager, "close", lambda: None)
 
-    comparison_result = {}
-
-    def run_comparison():
-        comparison_result["response"] = client.post(
-            "/compare-models",
-            json={"productId": "product-1"},
-        )
-
-    worker = threading.Thread(target=run_comparison)
-    worker.start()
-    assert started.wait(timeout=1)
-
-    started_at = time.perf_counter()
-    response = client.get("/openapi.json")
-    elapsed = time.perf_counter() - started_at
-
-    worker.join(timeout=1)
-    assert response.status_code == 200
-    assert elapsed < 0.1
-    assert comparison_result["response"].status_code == 200
+    with TestClient(app.app) as shared_client, ThreadPoolExecutor(max_workers=2) as executor:
+        comparison = executor.submit(shared_client.post, "/compare-models", json={"productId": "product-1"})
+        try:
+            assert started.wait(timeout=5)
+            health = executor.submit(shared_client.get, "/health")
+            assert health.result(timeout=5).status_code == 200
+            assert not comparison.done()
+        finally:
+            release.set()
+        assert comparison.result(timeout=5).status_code == 200
 
 
 def test_predict_preserves_success_response_contract(monkeypatch):
@@ -214,3 +210,22 @@ def test_prediction_endpoints_reject_missing_product_id(path, monkeypatch):
 
     assert response.status_code == 400
     assert response.json() == {"error": "productId is required"}
+
+
+
+def test_prophet_forecast_accepts_utc_sales_dates(monkeypatch):
+    from datetime import date, timedelta
+    import forecastService
+
+    sales = [
+        {"date": date(2025, 1, 1) + timedelta(days=day), "quantity": 10 + day % 7}
+        for day in range(30)
+    ]
+    monkeypatch.setattr(forecastService, "get_sales_data", lambda *args, **kwargs: sales)
+
+    result = forecastService.forecast_product("fixture-product", 3, "prophet", "fixture-tenant")
+
+    assert result["selectedModel"] == "prophet"
+    assert result["historicalPoints"] == 30
+    assert len(result["forecast"]) == 3
+    assert result["forecast"][0]["date"].endswith("+00:00")

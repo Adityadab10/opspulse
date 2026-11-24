@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clerk/react": "^6.19.5",
     "@tailwindcss/vite": "^4.1.12",
     "axios": "^1.13.6",
     "firebase": "^12.1.0",

@@ -13,7 +13,7 @@ from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from postgresService import _cursor, serialize_value
+from postgresService import _cursor, require_runtime_tenant, serialize_value
 from rag_provider import ProviderUnavailable, generate_grounded_answer, plan_question
 
 MAX_CONTEXT_CHARS = 9000
@@ -807,6 +807,7 @@ def answer_question(
     user_id: str | None = None,
     conversation: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
+    require_runtime_tenant(tenant_id)
     started = time.perf_counter()
     plan, planning_fallback = _validated_plan(question)
     logger.info(

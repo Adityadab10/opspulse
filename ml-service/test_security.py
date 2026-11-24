@@ -221,8 +221,9 @@ def test_ai_analyst_propagates_trusted_context(monkeypatch):
     captured_tenant = None
     captured_user = None
 
-    def spy_answer(question: str, tenant_id: str | None = None, user_id: str | None = None):
+    def spy_answer(question: str, tenant_id: str | None = None, user_id: str | None = None, conversation=None):
         nonlocal captured_tenant, captured_user
+        assert conversation == []
         captured_tenant = tenant_id
         captured_user = user_id
         return {

@@ -527,68 +527,70 @@ const insertSale = async (tenantId, productReference, saleDate, quantity) => {
   }
 };
 
-const adjustProductStock = async (tenantId, productReference, { mode = 'adjust', quantity, reason, expectedStock = undefined }) => {
-  const tenant = await withTenant(tenantId);
+const adjustProductStockInTransaction = async (
+  client, tenantId, productReference, { mode = 'adjust', quantity, reason, expectedStock },
+) => {
+  const tenant = await withTenant(tenantId, client);
+  const resolved = await resolveProduct(tenant, productReference, client);
+  if (!resolved) {
+    return null;
+  }
+  const locked = await client.query(
+    `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
+     FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+    [tenant, resolved.id],
+  );
+  const product = locked.rows[0];
+  if (!product || product.stock_quantity === undefined || product.stock_quantity === null) {
+    const error = new Error('Inventory schema is unavailable; apply migration 006_inventory_foundation.sql');
+    error.code = 'INVENTORY_SCHEMA_UNAVAILABLE';
+    error.statusCode = 503;
+    throw error;
+  }
+  const current = Number(product.stock_quantity);
+  if (expectedStock !== undefined && current !== Number(expectedStock)) {
+    return { staleStock: true, availableStock: current, product };
+  }
+  const requested = Number(quantity);
+  const movementCount = await client.query(
+    'SELECT COUNT(*)::int AS count FROM inventory_movements WHERE tenant_id = $1 AND product_id = $2',
+    [tenant, product.id],
+  );
+  const isInitial = mode === 'set' && Number(movementCount.rows[0]?.count || 0) === 0;
+  const delta = mode === 'set' ? requested - current : requested;
+  const next = current + delta;
+  if (next < 0) {
+    return { insufficientStock: true, availableStock: current, product };
+  }
+  if (delta === 0) {
+    return { product, movement: null };
+  }
+  const updated = await client.query(
+    `UPDATE products SET stock_quantity = $3, updated_at = now()
+     WHERE tenant_id = $1 AND id = $2 AND stock_quantity = $4
+     RETURNING id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at`,
+    [tenant, product.id, next, current],
+  );
+  if (updated.rows.length === 0) {
+    return { insufficientStock: true, availableStock: current, product };
+  }
+  const movementType = isInitial ? 'INITIAL' : delta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT';
+  const movement = await client.query(
+    `INSERT INTO inventory_movements (tenant_id, product_id, movement_type, quantity, reason)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, movement_type, quantity, reason, created_at`,
+    [tenant, product.id, movementType, Math.abs(delta), String(reason).trim()],
+  );
+  return { product: updated.rows[0], movement: movement.rows[0] };
+};
+
+const adjustProductStock = async (tenantId, productReference, adjustment) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const resolved = await resolveProduct(tenant, productReference, client);
-    if (!resolved) {
-      await client.query('ROLLBACK');
-      return null;
-    }
-    const locked = await client.query(
-      `SELECT id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at
-       FROM products WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-      [tenant, resolved.id],
-    );
-    const product = locked.rows[0];
-    if (!product || product.stock_quantity === undefined || product.stock_quantity === null) {
-      const error = new Error('Inventory schema is unavailable; apply migration 006_inventory_foundation.sql');
-      error.code = 'INVENTORY_SCHEMA_UNAVAILABLE';
-      error.statusCode = 503;
-      throw error;
-    }
-    const current = Number(product.stock_quantity);
-    if (expectedStock !== undefined && current !== Number(expectedStock)) {
-      await client.query('ROLLBACK');
-      return { staleStock: true, availableStock: current, product };
-    }
-    const requested = Number(quantity);
-    const movementCount = await client.query(
-      'SELECT COUNT(*)::int AS count FROM inventory_movements WHERE tenant_id = $1 AND product_id = $2',
-      [tenant, product.id],
-    );
-    const isInitial = mode === 'set' && Number(movementCount.rows[0]?.count || 0) === 0;
-    const delta = mode === 'set' ? requested - current : requested;
-    const next = current + delta;
-    if (next < 0) {
-      await client.query('ROLLBACK');
-      return { insufficientStock: true, availableStock: current, product };
-    }
-    if (delta === 0) {
-      await client.query('COMMIT');
-      return { product, movement: null };
-    }
-    const updated = await client.query(
-      `UPDATE products SET stock_quantity = $3, updated_at = now()
-       WHERE tenant_id = $1 AND id = $2 AND stock_quantity = $4
-       RETURNING id, name, category, stock_quantity, reorder_threshold, legacy_mongo_id, created_at, updated_at`,
-      [tenant, product.id, next, current],
-    );
-    if (updated.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return { insufficientStock: true, availableStock: current, product };
-    }
-    const movementType = isInitial ? 'INITIAL' : delta > 0 ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT';
-    const movement = await client.query(
-      `INSERT INTO inventory_movements (tenant_id, product_id, movement_type, quantity, reason)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, movement_type, quantity, reason, created_at`,
-      [tenant, product.id, movementType, Math.abs(delta), String(reason).trim()],
-    );
-    await client.query('COMMIT');
-    return { product: updated.rows[0], movement: movement.rows[0] };
+    const result = await adjustProductStockInTransaction(client, tenantId, productReference, adjustment);
+    await client.query(result && !result.staleStock && !result.insufficientStock ? 'COMMIT' : 'ROLLBACK');
+    return result;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -850,6 +852,7 @@ export {
   resolveProduct,
   insertSale,
   adjustProductStock,
+  adjustProductStockInTransaction,
   getInventoryMovements,
   importCsvSales,
   getActiveAlertsByProductId,

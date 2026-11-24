@@ -123,6 +123,9 @@ const sendTenantError = (res, error) => {
 
 export const createTenantContextMiddleware = ({ resolveMemberships = defaultResolveMemberships } = {}) =>
   async (req, res, next) => {
+    if (req.clerkUserId && !req.memberships?.length) {
+      return res.status(403).json({ message: "Tenant membership is required" });
+    }
     try {
       const context = await resolveTenantContext({
         user: req.user,

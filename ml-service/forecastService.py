@@ -55,7 +55,9 @@ def forecast_product(product_id: str, horizon: int = 30, model: str = "auto", te
     if selected == "prophet":
         if len(history) < 2:
             raise ValueError("Prophet requires at least 2 daily observations")
-        fitted = Prophet().fit(history[["ds", "y"]])
+        # Prophet requires timezone-naive dates. Keep UTC dates in the API response.
+        training = history[["ds", "y"]].assign(ds=history["ds"].dt.tz_localize(None))
+        fitted = Prophet().fit(training)
         future = fitted.make_future_dataframe(periods=horizon, freq="D", include_history=False)
         values = fitted.predict(future)["yhat"].tolist()
     else:

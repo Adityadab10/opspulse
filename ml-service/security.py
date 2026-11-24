@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import os
 import uuid
+from contextvars import ContextVar
 from typing import NamedTuple
 
 from fastapi import HTTPException, Request
@@ -20,6 +21,9 @@ class TrustedContext(NamedTuple):
     tenant_id: str
     user_id: str
     correlation_id: str
+
+
+current_context: ContextVar[TrustedContext | None] = ContextVar("trusted_context", default=None)
 
 
 def get_expected_internal_token() -> str:
@@ -71,4 +75,5 @@ async def require_trusted_context(request: Request) -> TrustedContext:
         correlation_id=correlation_id,
     )
     request.state.trusted_context = context
+    current_context.set(context)
     return context

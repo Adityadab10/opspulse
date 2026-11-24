@@ -1,5 +1,5 @@
 import pool from "../config/database.js";
-import { adjustProductStock } from "../config/postgres.js";
+import { adjustProductStockInTransaction } from "../config/postgres.js";
 import { getInventoryHealthData } from "../config/postgres.js";
 import { calculateInventoryHealth } from "../services/inventoryIntelligence.js";
 import { getMlAnalystConfig, requestMlService } from "../services/mlAnalystClient.js";
@@ -62,15 +62,30 @@ export const executeInventoryAgentAction = async (req, res) => {
     if (action.status !== 'approved') { await client.query('ROLLBACK'); return res.status(409).json({ message: "Only approved actions can be executed" }); }
     const rec = action.recommendation;
     if (rec?.proposedAction?.type !== 'record_replenishment' || !Number.isInteger(rec.proposedAction.quantity) || rec.proposedAction.quantity <= 0) { await client.query('ROLLBACK'); return res.status(400).json({ message: "Unsupported action" }); }
-    await client.query(`UPDATE inventory_agent_actions SET status='executing', updated_at=now() WHERE id=$1::uuid AND tenant_id=$2 AND status='approved'`, [action.id, req.authContext.tenantId]);
-    await client.query('COMMIT');
-    const adjustment = await adjustProductStock(req.authContext.tenantId, action.product_id, { mode: 'adjust', quantity: rec.proposedAction.quantity, expectedStock: rec.currentStock, reason: `Inventory Agent approved replenishment (${action.id})` });
-    if (adjustment.staleStock) {
-      const stale = await pool.query(`UPDATE inventory_agent_actions SET status='stale', execution_result=$1::jsonb, updated_at=now() WHERE id=$2::uuid AND tenant_id=$3 AND status='executing' RETURNING *`, [JSON.stringify({ message: 'Stock changed since analysis', availableStock: adjustment.availableStock }), action.id, req.authContext.tenantId]);
-      return res.status(409).json({ message: "Stock changed since analysis; rerun the agent before executing.", action: actionView(stale.rows[0]) });
+    if (!Number.isInteger(rec.currentStock) || rec.currentStock < 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: "Recommendation is missing a valid stock snapshot" });
     }
-    const updated = await pool.query(`UPDATE inventory_agent_actions SET status='executed', executed_by=$1, executed_at=now(), execution_result=$2::jsonb, updated_at=now() WHERE id=$3::uuid AND tenant_id=$4 AND status='executing' RETURNING *`, [req.authContext.userId, JSON.stringify(adjustment), action.id, req.authContext.tenantId]);
-    if (!updated.rows[0]) return res.status(409).json({ message: "Action execution was already finalized" });
+    const adjustment = await adjustProductStockInTransaction(client, req.authContext.tenantId, action.product_id, {
+      quantity: rec.proposedAction.quantity,
+      expectedStock: rec.currentStock,
+      reason: `Inventory Agent approved replenishment (${action.id})`,
+    });
+    if (!adjustment || adjustment.insufficientStock || adjustment.staleStock) {
+      const stale = adjustment?.staleStock === true;
+      const message = stale ? "Stock changed since analysis; rerun the agent before executing." : "Stock adjustment could not be applied";
+      const result = await client.query(`UPDATE inventory_agent_actions SET status=$1, execution_result=$2::jsonb,
+        updated_at=now() WHERE id=$3::uuid AND tenant_id=$4 AND status='approved' RETURNING *`,
+      [stale ? 'stale' : 'failed', JSON.stringify({ message, availableStock: adjustment?.availableStock }), action.id, req.authContext.tenantId]);
+      if (!result.rows[0]) throw new Error("Locked inventory action could not be finalized");
+      await client.query('COMMIT');
+      return res.status(409).json({ message, action: actionView(result.rows[0]) });
+    }
+    const updated = await client.query(`UPDATE inventory_agent_actions SET status='executed', executed_by=$1, executed_at=now(),
+      execution_result=$2::jsonb, updated_at=now() WHERE id=$3::uuid AND tenant_id=$4 AND status='approved' RETURNING *`,
+    [req.authContext.userId, JSON.stringify(adjustment), action.id, req.authContext.tenantId]);
+    if (!updated.rows[0]) throw new Error("Locked inventory action could not be finalized");
+    await client.query('COMMIT');
     return res.json({ action: actionView(updated.rows[0]) });
   } catch (error) { await client.query('ROLLBACK').catch(() => {}); return sendBackendError(res, "Failed to execute inventory action", error); } finally { client.release(); }
 };

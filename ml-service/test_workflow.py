@@ -204,17 +204,13 @@ def test_tracker_persistence_degraded_reporting():
 
 def test_checkpointer_thread_namespacing():
     """Verify CheckpointerManager namespaces thread_id by tenant to isolate state."""
-    namespaced = CheckpointerManager.namespace_thread_id("tenant-abc", "thread-123")
-    assert namespaced == "tenant-abc:thread-123"
-
-    # Idempotent if already prefixed
-    again = CheckpointerManager.namespace_thread_id("tenant-abc", namespaced)
-    assert again == "tenant-abc:thread-123"
-
-    # Different tenants produce distinct thread IDs for identical base IDs
-    other = CheckpointerManager.namespace_thread_id("tenant-xyz", "thread-123")
-    assert other == "tenant-xyz:thread-123"
-    assert namespaced != other
+    namespace = CheckpointerManager.namespace_thread_id
+    key = namespace("tenant-abc", "thread-123", "user-a")
+    assert key.startswith("tenant-abc:")
+    assert key == namespace("tenant-abc", "thread-123", "user-a")
+    assert key != namespace("tenant-abc", key, "user-a")
+    assert key != namespace("tenant-abc", "thread-123", "user-b")
+    assert key != namespace("tenant-xyz", "thread-123", "user-a")
 
 
 def test_checkpointer_manager_clean_fallback():

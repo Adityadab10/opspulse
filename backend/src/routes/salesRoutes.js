@@ -1,10 +1,10 @@
 import express from "express";
 import { addSales, getSalesByProduct, getSalesHistoryController } from "../controllers/salesController.js";
-import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireSessionMembership } from "../middleware/clerkAuth.js";
 import { requireTenantContext } from "../middleware/tenantContext.js";
 
 export const createSalesRouter = ({
-  authMiddleware = requireFirebaseAuth,
+  authMiddleware = requireSessionMembership,
   tenantMiddleware = requireTenantContext,
 } = {}) => {
   const router = express.Router();

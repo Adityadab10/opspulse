@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { getInventoryIntelligence } from "../controllers/inventoryIntelligenceController.js";
-import { requireFirebaseAuth } from "../middleware/firebaseAuth.js";
+import { requireSessionMembership } from "../middleware/clerkAuth.js";
 import { requireTenantContext } from "../middleware/tenantContext.js";
 
 const router = Router();
-router.use(requireFirebaseAuth, requireTenantContext);
+router.use(requireSessionMembership, requireTenantContext);
 router.get("/intelligence", getInventoryIntelligence);
 
 export default router;
